@@ -602,8 +602,10 @@ The goal is not to simulate unnecessary production complexity, but to build a sy
 ## Running InternshipFeed
 
 The implemented pipeline is **GitHub README → snapshot → source records → validated
-JobListing → PostgreSQL → FastAPI → jobs UI**. The UI lists jobs and opens a detail
-view with descriptions, technology/framework keywords, and requirement lines.
+JobListing → PostgreSQL → FastAPI → jobs UI**. The UI lists active jobs and opens a detail view with descriptions and AI overviews.
+Use **Sync & enrich** to fetch the repository, read application pages, analyze
+descriptions, and persist results in one background workflow. No ingestion command
+is needed after the app is running.
 
 ### Setup
 
@@ -651,15 +653,13 @@ python -m internshipfeed.db
 # Fetch and persist listings.
 python -m internshipfeed
 
-# Fetch descriptions for up to 10 open listings and save their keywords.
-python -m internshipfeed --enrich --enrich-limit 10
-
 # Serve API and UI together.
 python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
 
-Open **http://localhost:8000**. Search/filter listings, click a role for details,
-and click Refresh after ingestion. FastAPI serves UI and API from the same
+Open **http://localhost:8000**. Click **Sync & enrich** to import all listings and automatically enrich open jobs.
+Progress and counts appear in the UI; the feed reloads after completion.
+Search/filter listings and click a role for details. **Refresh** only reloads saved jobs. FastAPI serves UI and API from the same
 origin. The old `python -m http.server` command no longer serves a working jobs
 feed. Run the app from a source checkout containing `index.html` and `web/`.
 
@@ -684,7 +684,11 @@ PostgreSQL reads, and API responses use the same contract:
 | `external_id` | Deterministic source-specific identity fingerprint |
 | `posted_at` | Posting date, stored as PostgreSQL `DATE`; nullable |
 | `term` | Explicit season/year from the title; nullable |
-| `status` | `open`, `closed`, or `unknown`, according to the repository |
+| `status` | `open`, `closed`, `unknown`, or confirmed `dead` |
+| `link_checked_at` | Last application-page fetch attempt |
+| `ai_analysis` | Overview plus requirements, preferred qualifications, tech stack, frameworks, and responsibilities, each with source evidence |
+| `ai_status`, `ai_error` | AI outcome; missing configuration and quota failures are explicit |
+| `ai_model`, `ai_description_hash`, `ai_prompt_version`, `ai_enriched_at` | Cached AI provenance |
 | `description` | Extracted job description; nullable |
 | `keywords` | Languages, frameworks, tools/platforms, concepts, and requirement lines |
 | `enrichment_status`, `enrichment_error` | Outcome of the latest attempted enrichment |
@@ -719,7 +723,7 @@ company names (`↳`), and closed markers. Terms are populated only when explici
 in the title. `url` is the application URL, not the badge image URL. Status
 reflects the repository rather than an independent check of the application page.
 
-`--enrich` checks robots.txt and fetches public pages with timeouts, bounded
+Description enrichment is automatic and checks robots.txt and fetches public pages with timeouts, bounded
 responses, retries, and a default one-second delay between listings. It first
 extracts a single JSON-LD `JobPosting` description, then tries readable
 `main`/`article` HTML with recognizable job sections. JavaScript-only pages,
@@ -729,8 +733,55 @@ recorded and never imply that a job has closed.
 The explicit vocabulary in `enrich.py` finds technology mentions. Requirement
 lines come from recognizable qualification/requirement sections. Mentions are
 not proof that a skill is mandatory, and the vocabulary is not exhaustive.
-The detail view displays the extracted text and keyword groups. Jobs beyond
-`--enrich-limit` are not attempted; unavailable descriptions are not invented.
+The detail view displays the extracted text, AI analysis, and keyword groups.
+There is no default enrichment limit. The optional CLI `--enrich-limit` explicitly
+bounds attempts; `--no-enrich` disables page fetching for debugging. Unavailable
+descriptions are not invented.
+
+### Google AI transformation
+
+Open **AI settings** in the UI, get a key from
+[Google AI Studio](https://aistudio.google.com/apikey), and save it once. Use a
+Google project on the **Free tier with billing disabled**. Gemini 2.5 Flash-Lite
+currently offers free input/output on that tier; a billing-enabled project can
+incur charges. The app cannot verify Google's billing settings and has no paid
+provider/model fallback. See [Google pricing](https://ai.google.dev/gemini-api/docs/pricing)
+and [project-specific limits](https://ai.google.dev/gemini-api/docs/rate-limits).
+Free-tier content may be used by Google to improve its products. Only public job
+descriptions are sent; no candidate profiles or resumes are sent by this workflow.
+
+The key is stored server-side in ignored `.env` as `GEMINI_API_KEY`; it is never
+returned by the API or stored in browser storage. The fixed model is
+`gemini-2.5-flash-lite`. No OpenAI key or SDK is required. Without a Google key,
+sync still imports jobs and reads descriptions, with explicit `not_configured`
+AI status. A saved key is not a guarantee of model access; provider rejections
+are visible in job details and sync counters.
+
+The small transformation requests structured JSON containing an overview,
+mandatory requirements, preferred qualifications, technologies, frameworks,
+and responsibilities. Every list item includes a source quote. Responses are
+validated against the schema and quotes checked against the original description.
+These checks do not prove the AI interpretation is correct; review the retained
+source text. Invalid/incomplete responses are discarded. The description remains
+unchanged. Authentication/schema errors or quota limits pause further AI requests
+for that sync; there is no automatic billing upgrade. API calls are paced at a
+minimum of seven seconds apart, but quotas still depend on the Google project.
+Retry another sync later to process descriptions whose AI analysis is missing.
+
+Successful descriptions are reused for 24 hours, and AI results are reused when
+description hash, model, and prompt version match. Changed descriptions invalidate
+old AI analysis. Quota failures preserve valid cached results. `--refresh-descriptions`
+can force page fetching in the optional CLI; it does not repeat matching AI work.
+
+### Closed and dead links
+
+Closed source rows are saved for lineage but **excluded from the feed and detail
+API**, with no page fetch or AI call. HTTP **404/410 from the actual application
+page** marks a listing `dead` and hides it too. A recent dead-link check is cached
+for 24 hours; normal syncs recheck older dead links. Successful reads can restore
+an open listing. Timeouts, robots restrictions, 403/429 responses, and JavaScript
+shells do not prove a job is dead and do not remove it. This does not detect every
+expired HTTP-200 application page.
 
 ### Observability
 
@@ -760,14 +811,26 @@ rows in `data/source_records.json`. Generated data and `.env` are excluded from 
 
 ### API
 
-- `GET /api/jobs`: database jobs, newest posting date first. Optional `status` and `q` filters.
+- `GET /api/jobs`: database jobs, newest posting date first. Optional `status` and `q` filters; closed/dead listings are always excluded.
 - `GET /api/jobs/{id}`: one job including description and keywords; missing IDs return 404.
 - `GET /api/ingestion-runs/latest`: latest persisted report, or `null` before the first run.
+- `POST /api/sync`: starts or returns the active background run. A PostgreSQL lock prevents overlapping syncs across app processes.
+- `GET /api/ingestion-runs/{uuid}`: live progress and outcome. Interrupted runs are marked failed on restart.
+- `GET/POST /api/settings/ai`: configuration status / local-only Google key setup.
 - `GET /api/health`: database connectivity check.
 - `GET /docs`: generated API documentation.
 
 Database outages return 503 with a generic message. The UI never reads scraper
 output files; snapshots, `.env`, and exports are not served by the API.
+
+The full report also includes `processed`, `stage`, `current_job`, `closed`,
+`dead_links`, cached/skipped description counts, and AI attempts, successes,
+failures, cached results, missing configuration, and deferred quota work. A run
+can successfully persist listings while recording unavailable descriptions or AI
+results separately; the UI shows those counts rather than claiming complete AI
+coverage. No background queue service is required. This is a local development
+app: mutations are loopback-only and same-origin; internet deployment requires
+an authenticated operator interface and a durable worker process.
 
 ### Validation
 
@@ -801,8 +864,9 @@ refresh, and the mobile details dialog. Screenshots are saved in `data/screensho
 - `fetch.py`: HTTP transport and source configuration.
 - `source.py`: repository-specific Markdown parsing.
 - `models.py`, `normalize.py`: validated schema and source identity.
-- `enrich.py`: description/keyword extraction.
+- `enrich.py`, `ai.py`: page descriptions, deterministic keywords, and Gemini transformation.
+- `ingestion.py`, `sync.py`: shared workflow, caching, background execution, and progress.
 - `db.py`, `migrations/`: PostgreSQL storage/schema setup.
-- `cli.py`: ingestion orchestration, snapshots, and reporting.
+- `cli.py`: optional command-line wrapper for the UI workflow.
 - `api.py`: database API and UI hosting.
 - `dev_db.py`: optional development PostgreSQL launcher.

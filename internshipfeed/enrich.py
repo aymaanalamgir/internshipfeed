@@ -137,7 +137,7 @@ def extract_keywords(description):
 
 def enrich_job(job, robots_cache=None):
     result = {"status": "skipped", "description": None, "keywords": None, "error": None}
-    if job.status == "closed" or not job.url:
+    if job.status in {"closed", "dead"} or not job.url:
         result["error"] = "Closed listing or no application URL"
         return result
     cache = robots_cache if robots_cache is not None else {}
@@ -160,7 +160,14 @@ def enrich_job(job, robots_cache=None):
         if policy and not policy.can_fetch("InternshipFeed", job.url):
             result["error"] = "Disallowed by robots.txt"
             return result
-        markup, resolved_url = fetch_text(job.url)
+        from urllib.error import HTTPError
+        try:
+            markup, resolved_url = fetch_text(job.url)
+        except HTTPError as exc:
+            if exc.code in {404, 410}:
+                result.update(status="unavailable", dead=True, error="Application link returned HTTP %s" % exc.code)
+                return result
+            raise
         description, method = extract_description(markup)
         result["resolved_url"] = resolved_url
         if not description:

@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,8 @@ class DatabaseTests(unittest.TestCase):
         with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
             conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(self.schema)))
         self.dsn = make_conninfo(os.environ["TEST_DATABASE_URL"], options="-csearch_path=" + self.schema)
-        self.connect = lambda: db.connect(self.dsn)
+        original_connect = db.connect
+        self.connect = lambda: original_connect(self.dsn)
         self.conn = self.connect()
         db.initialize(self.conn)
         self.records = parse_readme(FIXTURE.read_text())
@@ -53,7 +55,7 @@ class DatabaseTests(unittest.TestCase):
             outcomes = list(pool.map(save, range(4)))
         self.assertEqual(outcomes.count("inserted"), 1)
         self.assertEqual(outcomes.count("skipped_duplicates"), 3)
-        self.assertEqual(len(db.list_jobs(self.conn)), 1)
+        self.assertEqual(len(db.list_jobs(self.conn, include_inactive=True)), 1)
         with self.assertRaises(psycopg.errors.UniqueViolation):
             self.conn.execute("INSERT INTO jobs (source, external_id, company, title, location, status, snapshot_id, source_line) VALUES (%s, %s, 'x', 'y', 'z', 'open', 'a', 1)", (self.job.source, self.job.external_id))
 
@@ -63,10 +65,10 @@ class DatabaseTests(unittest.TestCase):
         self.job.enrichment_status = "success"
         self.job.enriched_at = datetime.now(timezone.utc)
         self.assertEqual(db.save_job(self.conn, self.job), "inserted")
-        before = db.list_jobs(self.conn)[0]
+        before = db.list_jobs(self.conn, include_inactive=True)[0]
         closed = normalize(dict(self.records[0], status="closed", raw_url=None), SOURCE_URL, "b")
         self.assertEqual(db.save_job(self.conn, closed), "updated")
-        after = db.list_jobs(self.conn)[0]
+        after = db.list_jobs(self.conn, include_inactive=True)[0]
         self.assertEqual(after.id, before.id)
         self.assertEqual(after.first_seen_at, before.first_seen_at)
         self.assertGreaterEqual(after.last_seen_at, before.last_seen_at)
@@ -80,7 +82,7 @@ class DatabaseTests(unittest.TestCase):
         closed.enrichment_status = "failed"
         closed.enrichment_error = "timeout"
         db.save_job(self.conn, closed)
-        after = db.list_jobs(self.conn)[0]
+        after = db.list_jobs(self.conn, include_inactive=True)[0]
         self.assertEqual(after.description, before.description)
         self.assertEqual(after.enrichment_status, "failed")
 
@@ -93,7 +95,7 @@ class DatabaseTests(unittest.TestCase):
             with self.connect() as conn:
                 yield conn
         app.dependency_overrides[connection] = test_connection
-        with TestClient(app) as client:
+        with patch("internshipfeed.api.db.connect", side_effect=self.connect), TestClient(app) as client:
             response = client.get("/api/jobs")
             self.assertEqual(response.status_code, 200)
             data = response.json()
@@ -119,13 +121,13 @@ class DatabaseTests(unittest.TestCase):
             source = Path(directory) / "README.md"
             source.write_text(FIXTURE.read_text() + FIXTURE.read_text().splitlines()[3] + "\n")
             with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)):
-                self.assertEqual(main(["--input", str(source), "--output", str(output)]), 0)
+                self.assertEqual(main(["--input", str(source), "--output", str(output), "--no-enrich", "--no-ai"]), 0)
                 first = json.loads((output / "run.json").read_text())
                 self.assertEqual((first["scraped"], first["inserted"], first["skipped_duplicates"], first["failed"]), (4, 3, 1, 0))
-                self.assertEqual(main(["--input", str(source), "--output", str(output)]), 0)
+                self.assertEqual(main(["--input", str(source), "--output", str(output), "--no-enrich", "--no-ai"]), 0)
                 second = json.loads((output / "run.json").read_text())
                 self.assertEqual((second["inserted"], second["skipped_duplicates"], second["failed"]), (0, 4, 0))
-            self.assertEqual(len(db.list_jobs(self.conn)), 3)
+            self.assertEqual(len(db.list_jobs(self.conn, include_inactive=True)), 3)
             self.assertEqual(db.latest_run(self.conn)["id"], second["id"])
             self.assertEqual(self.conn.execute("SELECT count(*) AS n FROM ingestion_runs").fetchone()["n"], 2)
 
@@ -133,21 +135,95 @@ class DatabaseTests(unittest.TestCase):
         original_connect = db.connect
         bad = dict(self.records[0], company=" ")
         with tempfile.TemporaryDirectory() as directory:
-            with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)), patch("internshipfeed.cli.parse_readme", return_value=[bad, self.records[1]]):
-                result = main(["--input", str(FIXTURE), "--output", directory])
+            with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)), patch("internshipfeed.ingestion.parse_readme", return_value=[bad, self.records[1]]):
+                result = main(["--input", str(FIXTURE), "--output", directory, "--no-enrich", "--no-ai"])
             report = json.loads((Path(directory) / "run.json").read_text())
             self.assertEqual(result, 1)
             self.assertEqual(report["status"], "partial_failure")
             self.assertEqual((report["scraped"], report["inserted"], report["failed"]), (2, 1, 1))
-            self.assertEqual(len(db.list_jobs(self.conn)), 1)
+            self.assertEqual(len(db.list_jobs(self.conn, include_inactive=True)), 1)
 
     def test_enrichment_persisted_by_scraper(self):
         original_connect = db.connect
         enrichment = {"status": "success", "error": None, "description": "Experience with Python.", "keywords": {"languages": ["Python"]}, "extraction_method": "json_ld", "resolved_url": self.job.url}
         with tempfile.TemporaryDirectory() as directory:
-            with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)), patch("internshipfeed.cli.enrich_job", return_value=enrichment):
+            with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)), patch("internshipfeed.ingestion.enrich_job", return_value=enrichment):
                 self.assertEqual(main(["--input", str(FIXTURE), "--output", directory, "--enrich"]), 0)
-            job = next(j for j in db.list_jobs(self.conn) if j.status == "open")
+            job = next(j for j in db.list_jobs(self.conn, include_inactive=True) if j.status == "open")
             self.assertEqual(job.description, enrichment["description"])
             self.assertEqual(job.keywords.languages, ["Python"])
             self.assertIsNotNone(job.enriched_at)
+
+
+    def test_inactive_jobs_hidden_from_feed_and_details(self):
+        for record in self.records:
+            db.save_job(self.conn, normalize(record, SOURCE_URL, "snapshot"))
+        active = db.list_jobs(self.conn)
+        self.assertEqual(len(active), 2)
+        closed = next(job for job in db.list_jobs(self.conn, include_inactive=True) if job.status == "closed")
+        self.assertIsNone(db.get_job(self.conn, closed.id))
+        self.job.status = "dead"
+        db.save_job(self.conn, self.job)
+        self.assertEqual(len(db.list_jobs(self.conn)), 1)
+        self.assertEqual(db.list_jobs(self.conn, status="closed"), [])
+
+    def test_ai_cached_preserved_and_invalidated_on_description_change(self):
+        from internshipfeed.ai import DescriptionAnalysis, DEFAULT_MODEL, description_hash
+        self.job.description = "Build tools with Python."
+        self.job.enrichment_status = "success"
+        self.job.ai_status = "success"
+        self.job.ai_analysis = DescriptionAnalysis(overview="Build tools.", key_requirements=[], preferred_qualifications=[], tech_stack=[], frameworks=[], responsibilities=[])
+        self.job.ai_description_hash = description_hash(self.job.description)
+        self.job.ai_model = DEFAULT_MODEL
+        db.save_job(self.conn, self.job)
+        fresh = normalize(self.records[0], SOURCE_URL, "next")
+        fresh.ai_status = "failed"
+        fresh.ai_error = "Quota reached"
+        db.save_job(self.conn, fresh)
+        stored = db.get_source_job(self.conn, self.job.source, self.job.external_id)
+        self.assertIsNotNone(stored.ai_analysis)
+        fresh.description = "Build tools with Java."
+        fresh.enrichment_status = "success"
+        db.save_job(self.conn, fresh)
+        stored = db.get_source_job(self.conn, self.job.source, self.job.external_id)
+        self.assertIsNone(stored.ai_analysis)
+
+    def test_ui_sync_runs_background_and_blocks_duplicate_runs(self):
+        from internshipfeed.ingestion import run_ingestion, SYNC_LOCK
+        def test_connection():
+            with self.connect() as conn:
+                yield conn
+        app.dependency_overrides[connection] = test_connection
+        with tempfile.TemporaryDirectory() as directory:
+            def small_workflow(**kwargs):
+                return run_ingestion(input_path=FIXTURE, output=directory, enrich=False, use_ai=False, **kwargs)
+            with patch("internshipfeed.api.db.connect", side_effect=self.connect), patch("internshipfeed.sync.run_ingestion", side_effect=small_workflow), TestClient(app) as client:
+                response = client.post("/api/sync")
+                self.assertEqual(response.status_code, 202)
+                run_id = response.json()["id"]
+                for _ in range(100):
+                    report = client.get("/api/ingestion-runs/" + run_id).json()
+                    if report["status"] != "running":
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(report["status"], "success")
+                self.assertEqual(report["inserted"], 3)
+                with self.connect() as lock:
+                    lock.execute("SELECT pg_advisory_lock(%s)", (SYNC_LOCK,))
+                    self.assertEqual(client.post("/api/sync").json()["id"], run_id)
+                self.assertEqual(client.post("/api/sync", headers={"Origin": "https://evil.example"}).status_code, 403)
+
+    def test_ai_settings_never_returns_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def test_connection():
+                with self.connect() as conn:
+                    yield conn
+            app.dependency_overrides[connection] = test_connection
+            with patch("internshipfeed.api.db.connect", side_effect=self.connect), patch("internshipfeed.api.db.ROOT", Path(directory)), patch.dict(os.environ, {}, clear=False), TestClient(app) as client:
+                key = "test-key-12345678901234567890"
+                response = client.post("/api/settings/ai", json={"api_key": key, "free_tier_confirmed": True})
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json()["configured"])
+                self.assertNotIn(key, response.text)
+                self.assertNotIn(key, client.get("/api/settings/ai").text)
+                self.assertIn(key, (Path(directory) / ".env").read_text())

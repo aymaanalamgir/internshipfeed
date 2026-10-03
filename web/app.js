@@ -29,7 +29,7 @@ function render() {
   const query = search.value.trim().toLowerCase();
   const visible = jobs.filter(job => {
     const keywords = job.keywords || {};
-    const text = [job.company, job.title, job.location, job.term, ...Object.values(keywords).flat()].join(' ').toLowerCase();
+    const text = [job.company, job.title, job.location, job.term, job.ai_analysis?.overview, ...Object.values(keywords).flat(), ...(job.ai_analysis?.tech_stack || []).map(item => item.text), ...(job.ai_analysis?.frameworks || []).map(item => item.text)].join(' ').toLowerCase();
     return (status.value === 'all' || job.status === status.value) && text.includes(query);
   });
   summary.textContent = `${visible.length.toLocaleString()} of ${jobs.length.toLocaleString()} jobs`;
@@ -118,8 +118,29 @@ async function showDetails(id) {
       element('h2', job.title),
       element('p', [job.location, job.term, job.status].filter(Boolean).join(' · '), 'muted')
     );
+    if (job.ai_analysis) {
+      const analysis = job.ai_analysis;
+      detailContent.append(element('h3', 'AI overview'), element('p', analysis.overview, 'ai-overview'));
+      for (const [key, label] of [['key_requirements', 'Key requirements'], ['preferred_qualifications', 'Preferred qualifications'], ['tech_stack', 'Tech stack'], ['frameworks', 'Frameworks'], ['responsibilities', 'Responsibilities']]) {
+        if (!analysis[key]?.length) continue;
+        detailContent.append(element('h3', label));
+        const items = document.createElement('ul');
+        for (const item of analysis[key]) {
+          const entry = document.createElement('li');
+          entry.append(element('span', item.text));
+          const evidence = document.createElement('details');
+          evidence.className = 'evidence';
+          evidence.append(element('summary', 'Source evidence'), element('p', item.evidence));
+          entry.append(evidence);
+          items.append(entry);
+        }
+        detailContent.append(items);
+      }
+    } else {
+      detailContent.append(element('p', job.ai_error || 'AI overview has not been generated yet.', 'muted'));
+    }
     const keywords = job.keywords || {};
-    for (const [key, label] of [['languages', 'Languages'], ['frameworks', 'Frameworks'], ['tools_and_platforms', 'Tools & platforms'], ['concepts', 'Concepts']]) {
+    if (!job.ai_analysis) for (const [key, label] of [['languages', 'Languages'], ['frameworks', 'Frameworks'], ['tools_and_platforms', 'Tools & platforms'], ['concepts', 'Concepts']]) {
       if (keywords[key]?.length) {
         detailContent.append(element('h3', label));
         const chips = document.createElement('div');
@@ -128,7 +149,7 @@ async function showDetails(id) {
         detailContent.append(chips);
       }
     }
-    if (keywords.requirements?.length) {
+    if (!job.ai_analysis && keywords.requirements?.length) {
       detailContent.append(element('h3', 'Key requirements'));
       const requirements = document.createElement('ul');
       for (const requirement of keywords.requirements) requirements.append(element('li', requirement));
@@ -151,3 +172,92 @@ async function showDetails(id) {
     console.error('Unable to load job details:', error);
   }
 }
+
+
+const syncButton = document.querySelector('#sync-jobs');
+const syncPanel = document.querySelector('#sync-panel');
+const syncStatus = document.querySelector('#sync-status');
+const syncProgress = document.querySelector('#sync-progress');
+const syncCounts = document.querySelector('#sync-counts');
+let pollTimer;
+let syncing = false;
+
+function showSync(run) {
+  if (!run) return;
+  syncPanel.hidden = false;
+  syncing = run.status === 'running';
+  syncButton.disabled = syncing;
+  syncButton.textContent = syncing ? 'Syncing…' : 'Sync & enrich';
+  const total = run.scraped || 0;
+  const processed = run.processed || 0;
+  if (syncing && !total) syncProgress.removeAttribute('value');
+  else { syncProgress.max = total || 1; syncProgress.value = processed || (syncing ? 0 : total); }
+  syncStatus.textContent = syncing
+    ? (total ? `Reading descriptions: ${processed} of ${total} listings. ${run.current_job || ''}` : 'Fetching the latest listings…')
+    : run.status === 'success' ? 'Sync complete.' : 'Sync ended with errors. Successfully saved jobs are available; try syncing again.';
+  syncCounts.textContent = `${run.inserted || 0} new · ${run.updated || 0} updated · ${run.skipped_duplicates || 0} duplicates · ${run.failed || 0} failed · ${run.enrichment_successes || 0} descriptions read · ${run.ai_successes || 0} AI overviews · ${run.ai_cached || 0} AI results reused · ${run.closed || 0} closed skipped · ${run.dead_links || 0} dead links hidden`;
+  if (run.ai_not_configured) syncCounts.textContent += ' · Add a Google API key in AI settings to enable overviews.';
+  if (run.ai_failed || run.ai_deferred) syncCounts.textContent += ` · ${(run.ai_failed || 0) + (run.ai_deferred || 0)} AI analyses unavailable; retry later.`;
+}
+
+async function pollSync() {
+  clearTimeout(pollTimer);
+  try {
+    const response = await fetch('/api/ingestion-runs/latest', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Progress unavailable');
+    const run = await response.json();
+    const wasSyncing = syncing;
+    showSync(run);
+    if (syncing) pollTimer = setTimeout(pollSync, 2000);
+    else if (wasSyncing) await load();
+  } catch {
+    if (syncing) { syncStatus.textContent = 'Waiting for sync progress…'; pollTimer = setTimeout(pollSync, 5000); }
+  }
+}
+
+syncButton.addEventListener('click', async () => {
+  syncButton.disabled = true;
+  syncPanel.hidden = false;
+  syncStatus.textContent = 'Starting sync…';
+  try {
+    const response = await fetch('/api/sync', { method: 'POST' });
+    if (!response.ok) throw new Error('Unable to start sync');
+    showSync(await response.json());
+    await pollSync();
+  } catch {
+    syncPanel.hidden = false;
+    syncStatus.textContent = 'Unable to start sync. Please try again.';
+    syncButton.disabled = false;
+  }
+});
+pollSync();
+
+const settingsDialog = document.querySelector('#ai-settings');
+const settingsMessage = document.querySelector('#ai-settings-message');
+const keyInput = document.querySelector('#ai-key');
+document.querySelector('#ai-settings-button').addEventListener('click', async () => {
+  settingsMessage.textContent = '';
+  settingsDialog.showModal();
+  try {
+    const response = await fetch('/api/settings/ai');
+    if (!response.ok) throw new Error();
+    const config = await response.json();
+    document.querySelector('#ai-configuration-status').textContent = config.configured ? 'A Google key is saved. You can replace it below.' : 'No Google key has been saved yet.';
+  } catch { settingsMessage.textContent = 'Could not read AI settings.'; }
+});
+document.querySelector('#close-ai-settings').addEventListener('click', () => settingsDialog.close());
+settingsDialog.addEventListener('close', () => { keyInput.value = ''; });
+document.querySelector('#ai-settings-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const save = document.querySelector('#save-ai-settings');
+  save.disabled = true;
+  try {
+    const response = await fetch('/api/settings/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: keyInput.value.trim(), free_tier_confirmed: document.querySelector('#free-tier').checked }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Unable to save key.');
+    keyInput.value = '';
+    document.querySelector('#ai-configuration-status').textContent = 'Google key saved.';
+    settingsMessage.textContent = 'Saved. Close settings and click Sync & enrich to generate AI overviews.';
+  } catch (error) { settingsMessage.textContent = error.message; }
+  finally { save.disabled = false; }
+});

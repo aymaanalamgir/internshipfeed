@@ -48,3 +48,14 @@ dialog li { margin-bottom: 8px; }
 .description { white-space: pre-wrap; overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .keyword { padding: 5px 10px; font-size: 12px; border-radius: 6px; background: #e8f5ec; color: #237047; }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.primary { background: #237047; color: white; border-color: #237047; }
+#sync-panel { background: #edf5ef; border: 1px solid #d4e4d8; padding: 16px; border-radius: 10px; margin-bottom: 18px; }
+#sync-panel p { margin: 4px 0 10px; font-size: 13px; overflow-wrap: anywhere; }
+progress { width: 100%; accent-color: #237047; }
+.checkbox { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0; font-weight: normal; line-height: 1.6; }
+.checkbox input { width: auto; margin-top: 3px; }
+.ai-overview { background: #edf5ef; border-radius: 8px; padding: 16px; }
+.evidence { margin: 4px 0 12px; color: #6b7870; font-size: 12px; }
+@media (max-width: 640px) { .results-heading { align-items: flex-start; gap: 12px; flex-direction: column; } }
