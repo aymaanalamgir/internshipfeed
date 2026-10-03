@@ -1,0 +1,1 @@
+"""InternshipFeed ingestion pipeline."""
