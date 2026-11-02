@@ -35,6 +35,18 @@ export interface InteractionState {
   dismissed: boolean;
   applied: boolean;
   last_interaction_at: string | null;
+  saved_at: string | null;
+  applied_at: string | null;
+  last_event_id: number;
 }
 
+export interface InteractionReceipt extends InteractionEvent {
+  interaction_state: InteractionState;
+}
+
+export interface CandidateJob extends Recommendation {
+  interaction_state: InteractionState;
+}
+
+export type JobView = 'recommended' | 'saved' | 'applied';
 export type InteractionStates = Record<number, InteractionState>;

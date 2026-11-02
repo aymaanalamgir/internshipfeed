@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { InteractionState, InteractionType, Recommendation } from '../types/jobs';
+import type { InteractionState, InteractionType, JobView, Recommendation } from '../types/jobs';
 import { applicationUrl } from '../lib/workflow';
 
 function ActionIcon({ kind, filled = false }: { kind: 'bookmark' | 'clock' | 'close' | 'external'; filled?: boolean }) {
@@ -15,6 +15,7 @@ function ActionIcon({ kind, filled = false }: { kind: 'bookmark' | 'clock' | 'cl
 }
 
 interface Props {
+  view?: JobView;
   recommendation: Recommendation;
   interactionState: InteractionState;
   pending?: InteractionType;
@@ -25,7 +26,7 @@ interface Props {
   onApplied: (id: number) => void;
 }
 
-export function RecommendationCard({ recommendation, interactionState, pending, error, onApply, onSave, onDismiss, onApplied }: Props) {
+export function RecommendationCard({ view = 'recommended', recommendation, interactionState, pending, error, onApply, onSave, onDismiss, onApplied }: Props) {
   const [expanded, setExpanded] = useState(false);
   const { job, matched_skills: skills } = recommendation;
   const url = applicationUrl(job.application_url);
@@ -39,6 +40,10 @@ export function RecommendationCard({ recommendation, interactionState, pending, 
           <p className="job-company">{job.company}</p>
           <h2 id={`job-title-${job.id}`}>{job.title}</h2>
           <p className="job-meta"><span>{job.location}</span>{job.posted_at && <><span aria-hidden="true">·</span><time dateTime={job.posted_at}>Posted {job.posted_at}</time></>}</p>
+          {view === 'applied' && interactionState.applied_at && <p className="applied-date">Applied <time dateTime={interactionState.applied_at}>
+            {new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(interactionState.applied_at))}
+          </time></p>}
+          {['closed', 'dead'].includes(job.status) && <p className="job-availability">{job.status === 'closed' ? 'Posting closed' : 'Application link unavailable'}</p>}
         </div>
         <button className="match-toggle" type="button" aria-expanded={expanded} aria-controls={`match-${job.id}`}
           aria-label={`Why this score for ${job.title}`} onClick={() => setExpanded(value => !value)}>
@@ -60,7 +65,7 @@ export function RecommendationCard({ recommendation, interactionState, pending, 
       </div>}
       <div className="recommendation-actions">
         {url ? <a className="button apply-action" href={url} target="_blank" rel="noopener noreferrer" onClick={() => onApply(job.id)}>
-          Apply<ActionIcon kind="external" />
+          {view === 'applied' ? 'Open application' : 'Apply'}<ActionIcon kind="external" />
         </a> : <button className="button apply-action" type="button" disabled title="Application link unavailable">Apply unavailable</button>}
         <button className={`button utility-action${interactionState.saved ? ' is-active' : ''}`} type="button"
           aria-label={interactionState.saved ? 'Job saved' : 'Save job'} aria-pressed={interactionState.saved}
@@ -72,8 +77,8 @@ export function RecommendationCard({ recommendation, interactionState, pending, 
           disabled={busy || interactionState.applied} onClick={() => onApplied(job.id)}>
           <ActionIcon kind="clock" />{pending === 'applied' ? 'Recording…' : interactionState.applied ? 'Applied' : 'Mark applied'}
         </button>
-        <button className="dismiss-action" type="button" aria-label="Dismiss job" title="Dismiss job"
-          disabled={busy} onClick={() => onDismiss(job.id)}><ActionIcon kind="close" /></button>
+        {view !== 'applied' && <button className="dismiss-action" type="button" aria-label="Dismiss job" title="Dismiss job"
+          disabled={busy} onClick={() => onDismiss(job.id)}><ActionIcon kind="close" /></button>}
       </div>
       {error && <p className="field-error action-error" role="alert">{error}</p>}
     </article>

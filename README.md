@@ -25,6 +25,8 @@ flowchart TD
     MATCH --> RECS[Recommendations API]
     RECS --> CARDS[React recommendation cards]
     CARDS --> E[(job_interactions)]
+    E --> STATE[SQL-derived candidate state]
+    STATE --> VIEWS[Recommended / Saved / Applied]
     CP[(candidate_profiles)] --> E[(job_interactions)]
     C --> E
     CP --> RES[(resumes: extracted text and metadata)]
@@ -97,6 +99,8 @@ screen is at **http://127.0.0.1:8000/profile**. Recommended jobs and actions are
 PDFs through the backend APIs. Build output is ignored by Git; rebuild
 after frontend changes. [Frontend setup and architecture](docs/frontend.md)
 includes the optional Vite development workflow.
+Saved jobs are at `/saved`, and application history is at `/applied`. Restart
+FastAPI after updating backend routes.
 
 Open **http://localhost:8000** and click **Sync & enrich** to run both enabled
 sources. The background workflow fetches, snapshots, parses, normalizes, optionally
@@ -162,9 +166,11 @@ remain local diagnostics/replay artifacts.
 - `GET /api/profile`: the seeded development candidate profile, including ID and timestamps.
 - `PUT /api/profile`: replace all five editable fields; return the normalized, persisted profile.
 - `POST /api/resumes`: upload one PDF in multipart field `file`; return HTTP 201 with metadata and extracted text.
-- `GET /api/recommendations`: scored visible canonical jobs with component scores, matched skills, and reasons; optional `min_score=0..100` (default 0).
+- `GET /api/recommendations`: visible, nondismissed, unapplied jobs with unchanged fit scores and SQL-derived `interaction_state`; optional `min_score=0..100` (default 0).
+- `GET /api/saved`: saved, nondismissed jobs, including applied jobs; newest save first.
+- `GET /api/applied`: application history, newest applied event first, including closed/dismissed jobs.
 - `POST /api/jobs/{id}/interactions`: append a `click`, `save`, `dismiss`, or `applied` event for the development profile; merged IDs resolve to their surviving canonical job.
-- `GET /api/interactions`: effective Saved/Dismissed/Applied flags and last interaction time, grouped by current canonical job.
+- `GET /api/interactions`: effective flags, latest interaction/save/application timestamps, and event cursor, grouped by current canonical job.
 - `GET /api/sources`: configured datasets, including source IDs and enabled state.
 - `GET /api/jobs`: seven-field canonical jobs; optional `source_id` (dataset ID), `source` (repository URL), `status`, and `q` filters.
 - `GET /api/jobs/{id}`: a canonical job; merged IDs resolve to their survivor.
@@ -242,19 +248,26 @@ curl 'http://127.0.0.1:8000/api/recommendations?min_score=20'
 The profile UI supports tag editing, explicit saves, inline feedback, and PDF
 uploads. Uploaded filenames are shown for the current browser session; there is
 no résumé-history API. Uploads do not change the form or candidate preferences.
-The Recommended screen offers **Apply → Save → Applied → Dismiss**. Apply opens
+The Recommended and Saved screens offer **Apply → Save → Applied → Dismiss**. Apply opens
 the external application in a new tab and attempts to record a click; a recording
 failure never blocks navigation or implies an application was completed. Save
 uses an active bookmark, Applied uses a clock, and Dismiss removes the card only
-after the server confirms the event. State returns after refresh. A compact score
+after the server confirms the event. Marking Applied moves the job out of
+discovery and into Applied. It may remain in Saved too. The Applied view shows
+the application date and an Open application link. State returns after refresh. A compact score
 disclosure exposes the unchanged matching breakdown and reasons.
 
-Interaction history is append-only. Effective flags are derived from events and
-follow canonical merge redirects; scores never use interaction state. Save and
+Interaction history is append-only. Effective flags and timestamps are derived in
+SQL and follow canonical merge redirects; scores never use interaction state.
+Collections and action receipts carry server-derived state, which React consumes
+without replaying events. Save and
 Applied are one-directional in this slice, and there is no undo for Dismiss.
 See [docs/interactions.md](docs/interactions.md) for contracts and exact semantics.
-Résumé-to-profile suggestions, dedicated Saved/Applied views, and authentication
-are future work.
+Dismissed/applied jobs are also excluded from normal `/api/jobs` and `/api/feed`
+discovery; the underlying canonical records remain stored. Saved/Applied history
+retains closed, dead, and unlinked jobs. Global ingestion/reconciliation counts
+remain source-level operational records. Résumé-to-profile suggestions and
+authentication are future work.
 
 ## Tests
 

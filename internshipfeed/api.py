@@ -11,9 +11,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .models import (CandidateProfile, CandidateProfileUpdate, CanonicalJob, InteractionRequest,
-                     JobDetails, JobInteraction, JobInteractionState, MatchResult, Resume)
-from .matching import rank_jobs
+from .models import (CandidateJobView, CandidateProfile, CandidateProfileUpdate, CanonicalJob,
+                     InteractionReceipt, InteractionRequest, JobDetails, JobInteractionState, Resume)
+from .matching import rank_jobs, score_job
 from .resumes import MAX_UPLOAD_BYTES, ResumeExtractionError, extract_pdf_text
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
@@ -52,14 +52,16 @@ def sources(conn=Depends(connection)):
 def jobs(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
          source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection)):
-    return db.list_jobs(conn, status=status, query=q, source=source, source_id=source_id)
+    profile = _development_candidate(conn)
+    return [details.job for details, _ in db.candidate_job_details(conn, profile['id'], status=status, query=q, source=source, source_id=source_id)]
 
 
 @app.get("/api/feed", response_model=List[JobDetails])
 def feed(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
          source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection)):
-    return db.list_job_details(conn, status=status, query=q, source=source, source_id=source_id)
+    profile = _development_candidate(conn)
+    return [details for details, _ in db.candidate_job_details(conn, profile['id'], status=status, query=q, source=source, source_id=source_id)]
 
 
 @app.get("/api/jobs/{job_id}/details", response_model=JobDetails)
@@ -111,12 +113,37 @@ def profile(conn=Depends(connection)):
     return result
 
 
-@app.get("/api/recommendations", response_model=List[MatchResult])
-def recommendations(min_score: int = Query(default=0, ge=0, le=100), conn=Depends(connection)):
+def _development_candidate(conn):
     profile = db.development_profile(conn)
     if profile is None:
-        raise HTTPException(503, "Development profile is missing. Initialize the database before using recommendations.")
-    return rank_jobs(CandidateProfile.model_validate(profile), db.list_job_details(conn), min_score=min_score)
+        raise HTTPException(503, "Development profile is missing. Initialize the database before using job views.")
+    return profile
+
+
+def _job_collection(conn, view, min_score=0):
+    profile = CandidateProfile.model_validate(_development_candidate(conn))
+    entries = db.candidate_job_details(conn, profile.id, view)
+    details, states = [item for item, _ in entries], {item.job.id: state for item, state in entries}
+    matches = rank_jobs(profile, details, min_score=min_score) if view == 'recommended' else [score_job(profile, item) for item in details]
+    if view != 'recommended':
+        field = 'saved_at' if view == 'saved' else 'applied_at'
+        matches.sort(key=lambda match: (getattr(states[match.job.id], field).timestamp(), match.job.id), reverse=True)
+    return [CandidateJobView(**match.model_dump(), interaction_state=states[match.job.id]) for match in matches]
+
+
+@app.get("/api/recommendations", response_model=List[CandidateJobView])
+def recommendations(min_score: int = Query(default=0, ge=0, le=100), conn=Depends(connection)):
+    return _job_collection(conn, 'recommended', min_score)
+
+
+@app.get("/api/saved", response_model=List[CandidateJobView])
+def saved_jobs(conn=Depends(connection)):
+    return _job_collection(conn, 'saved')
+
+
+@app.get("/api/applied", response_model=List[CandidateJobView])
+def applied_jobs(conn=Depends(connection)):
+    return _job_collection(conn, 'applied')
 
 
 @app.put("/api/profile", response_model=CandidateProfile)
@@ -136,14 +163,14 @@ def interactions(conn=Depends(connection)):
     return db.interaction_states(conn, candidate['id'])
 
 
-@app.post("/api/jobs/{job_id}/interactions", response_model=JobInteraction, status_code=201)
+@app.post("/api/jobs/{job_id}/interactions", response_model=InteractionReceipt, status_code=201)
 def job_interaction(job_id: int, interaction: InteractionRequest, request: Request, conn=Depends(connection)):
     local_mutation(request)
     candidate = db.development_profile(conn)
     if candidate is None:
         raise HTTPException(503, "Development profile is missing. Initialize the database before using interactions.")
     try:
-        return db.record_interaction(conn, candidate['id'], job_id, interaction.type)
+        return db.record_interaction_with_state(conn, candidate['id'], job_id, interaction.type)
     except ValueError:
         raise HTTPException(404, "Job not found") from None
 
@@ -224,6 +251,10 @@ def index():
 @app.get("/profile/", include_in_schema=False)
 @app.get("/recommendations", include_in_schema=False)
 @app.get("/recommendations/", include_in_schema=False)
+@app.get("/saved", include_in_schema=False)
+@app.get("/saved/", include_in_schema=False)
+@app.get("/applied", include_in_schema=False)
+@app.get("/applied/", include_in_schema=False)
 def profile_page():
     path = db.ROOT / 'frontend' / 'dist' / 'index.html'
     if not path.is_file():

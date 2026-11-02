@@ -14,9 +14,10 @@ npm --prefix frontend run build
 .venv/bin/python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
 
-Visit `/profile` for the profile, `/recommendations` for actionable matches, and
+Visit `/profile` for the profile, `/recommendations` for discovery, `/saved` for
+bookmarks, `/applied` for application history, and
 `/feed` or `/` for the existing feed. Navigation links all three screens. FastAPI
-serves the same compiled React HTML at `/profile` and `/recommendations` (including
+serves the same compiled React HTML at those four screen routes (including
 trailing-slash forms), with compiled assets under `/profile/assets`. It returns HTTP
 503 if the frontend build is absent. Restart FastAPI after backend route changes.
 Existing profile/job APIs and `/web` assets are unchanged.
@@ -28,7 +29,7 @@ For live development, keep FastAPI running and use another terminal:
 npm --prefix frontend run dev
 ```
 
-Open `http://127.0.0.1:5173/profile` or `/recommendations`. Vite proxies `/api`, `/feed`, and `/web`
+Open `http://127.0.0.1:5173/profile`, `/recommendations`, `/saved`, or `/applied`. Vite proxies `/api`, `/feed`, and `/web`
 to FastAPI. If the backend uses another port:
 
 ```sh
@@ -72,13 +73,21 @@ has been uploaded in the current session. Arbitrary server diagnostics are not
 rendered. There is no upload percentage because the current request uses fetch;
 the Uploading state covers the request and backend extraction.
 
-## Recommendation actions
+## Product views and actions
 
-`RecommendationsPage` loads `GET /api/recommendations` and `GET /api/interactions`
-together. A failed state request produces a retry state rather than briefly
-showing dismissed jobs. All scoring comes from the backend. The UI preserves
-server ranking, filters confirmed dismissed state, and progressively renders 24
-cards with Show more. Applied cards remain visible and clearly marked.
+`JobCollectionPage` is reused by Recommended, Saved, and Applied. Each screen owns
+its server-loaded collection and calls one API: `/api/recommendations`,
+`/api/saved`, or `/api/applied`. Each response includes authoritative
+`interaction_state`; there is no second state fetch or raw event replay. Loading
+errors produce a retry state instead of a partially reconstructed list. Server
+ordering is preserved and 24 cards are progressively rendered with Show more.
+
+Recommended excludes dismissed/applied jobs. Saved includes saved nondismissed
+jobs, including applied ones. Applied includes application history even if later
+dismissed. The same card renders each view, with a UTC application date and Open
+application link in Applied. Closed/unavailable postings remain in history with
+their status shown. The compact navigation is Recommended/Saved/Applied/Profile;
+the wordmark links to the existing job feed. Mobile navigation wraps into two rows.
 
 `RecommendationCard` receives recommendation/state data and callbacks. It shows
 company, title, location, optional exact posting date, and matched technologies.
@@ -92,11 +101,15 @@ Even an HTTP 503 cannot block opening the external URL. Missing or invalid links
 render an unavailable Apply control. A click never marks the job applied.
 
 Other actions use confirmed updates. The specific card disables utilities while
-its request is pending, and success merges monotonic flags into local state.
+its request is pending, and success installs the SQL-derived snapshot returned
+by POST. `last_event_id` rejects stale responses without relying on JavaScript's
+millisecond timestamp precision. React never interprets event types to derive
+Saved/Dismissed/Applied flags.
 Failures retain the card/state and show a retryable inline error. Saved and
 Applied actions are one-directional; no event history is deleted. A dismiss is
-removed only after success and remains hidden after refresh. A merge response
-updates both a stale displayed ID and its new canonical ID without losing flags.
+removed only after success and remains hidden after refresh. Applied jobs leave
+Recommended but remain in Saved if bookmarked. A merge response updates both a
+stale displayed ID and its current canonical ID using the server's state.
 The API module owns requests; there are no fetch calls inside card JSX. See
 [interactions.md](interactions.md) for the event projection and API contract.
 
@@ -144,7 +157,7 @@ small utility icons, restrained active orange, and a 1 px border per opportunity
 | `frontend/src/components/ResumeUpload.tsx` | Session upload state and safe error messages. |
 | `frontend/src/components/RecommendationCard.tsx` | Job/score hierarchy and accessible action controls. |
 | `frontend/src/pages/ProfilePage.tsx` | Loading/retry, composition, and request cancellation. |
-| `frontend/src/pages/RecommendationsPage.tsx` | Load jobs/state, handle confirmed actions, and filter dismissals. |
+| `frontend/src/pages/JobCollectionPage.tsx` | Reused Recommended/Saved/Applied screen, server snapshots, confirmed actions, and refresh restoration. |
 | `frontend/src/styles.css` | Design tokens, layout, controls, focus, and mobile styles. |
 | `internshipfeed/api.py` | API endpoints and compiled frontend HTML/assets serving. |
 | `internshipfeed/db.py` | Append events and project candidate state across merged job IDs. |
@@ -181,11 +194,12 @@ and feed navigation. Screenshots are written under ignored `data/screenshots`.
 The separate existing feed check covers filters, job details, search, refresh,
 mobile layout, and sync progress. No UI test starts real source ingestion.
 
-The recommendation workflow script initializes an isolated schema on the existing
+The product workflow script initializes an isolated schema on the existing
 PostgreSQL server, seeds a development profile and four fixture jobs, and starts a
 temporary FastAPI process. It confirms save/click/dismiss/applied rows directly in
-PostgreSQL, refresh persistence, confirmed-only UI changes, error handling,
-unchanged scores, and 390/320 px layouts. A reserved fixture application URL opens
+PostgreSQL, persistence across all three screens and repeated refreshes, combined
+Saved/Applied and Saved/Dismissed precedence, application timestamps, confirmed-only
+UI changes, error handling, unchanged scores, and 390/320 px layouts. A reserved fixture application URL opens
 in a real new tab; its page is intercepted locally to avoid external employer
 requests. The script then runs the existing profile and feed checks in that same
 schema and removes its server/schema, preserving live candidate history.

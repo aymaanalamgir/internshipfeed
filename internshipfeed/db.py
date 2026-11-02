@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .models import CandidateProfileUpdate, CanonicalJob, JobDetails, JobKeywords, JobListing, SourceJobReference
+from .models import CandidateProfileUpdate, CanonicalJob, JobDetails, JobInteractionState, JobKeywords, JobListing, SourceJobReference
 from .reconciliation import RECONCILIATION_LOCK, backfill, canonicalize_url, link_posting, reconcile, refresh_canonical, root_id
 from .sources import SOURCES, get_source
 
@@ -214,14 +214,25 @@ def _job_details(stored, members):
         data = {key: row[key] for key in SourceJobReference.model_fields}
         data['snapshot_id'] = str(data['snapshot_id'])
         refs.append(SourceJobReference.model_validate(data))
-    return JobDetails(job=_core(stored), term=ordered[0]['term'], description=stored['description'],
+    return JobDetails(job=_core(stored), term=ordered[0]['term'] if ordered else None, description=stored['description'],
                       keywords=JobKeywords.model_validate(stored['keywords']), sources=refs)
 
 
-def list_job_details(conn, status=None, query=None, include_inactive=False, source=None, source_id=None):
+def list_job_details(conn, status=None, query=None, include_inactive=False, source=None, source_id=None,
+                     job_ids=None, exclude_job_ids=None, include_unlinked=False):
+    if job_ids is not None and not job_ids:
+        return []
+    clauses, params = ['i.merged_into_id IS NULL'], []
+    if job_ids is not None:
+        clauses.append('c.id=ANY(%s)'); params.append(job_ids)
+    if exclude_job_ids:
+        clauses.append('NOT (c.id=ANY(%s))'); params.append(exclude_job_ids)
     with conn.transaction():
-        canonical = conn.execute('SELECT c.* FROM canonical_jobs c JOIN canonical_job_identities i ON i.id=c.id WHERE i.merged_into_id IS NULL').fetchall()
-        observations = conn.execute(SOURCE_SELECT + ' ORDER BY p.id').fetchall()
+        canonical = conn.execute('SELECT c.* FROM canonical_jobs c JOIN canonical_job_identities i ON i.id=c.id WHERE ' + ' AND '.join(clauses), params).fetchall()
+        if not canonical:
+            return []
+        observations = conn.execute(SOURCE_SELECT + ' WHERE m.canonical_job_id=ANY(%s) ORDER BY p.id',
+                                    ([row['id'] for row in canonical],)).fetchall()
     groups = {}
     for row in observations:
         groups.setdefault(row['canonical_job_id'], []).append(row)
@@ -231,7 +242,9 @@ def list_job_details(conn, status=None, query=None, include_inactive=False, sour
             continue
         members = groups.get(stored['id'], [])
         eligible = members if include_inactive else [item for item in members if item['status'] not in {'closed', 'dead'}]
-        if not members or source and not any(item['source'] == source for item in eligible):
+        if not members and not include_unlinked:
+            continue
+        if source and not any(item['source'] == source for item in eligible):
             continue
         if source_id is not None and not any(item['source_id'] == source_id for item in eligible):
             continue
@@ -240,6 +253,23 @@ def list_job_details(conn, status=None, query=None, include_inactive=False, sour
         result.append(_job_details(stored, members))
     result.sort(key=lambda item: (item.job.posted_at is not None, item.job.posted_at.toordinal() if item.job.posted_at else 0, item.job.id), reverse=True)
     return result
+
+
+def candidate_job_details(conn, profile_id, view='recommended', **filters):
+    """Product membership over SQL-derived state; no scoring or event replay."""
+    states = {row['job_id']: JobInteractionState.model_validate(row) for row in interaction_states(conn, profile_id)}
+    if view == 'recommended':
+        hidden = [job_id for job_id, state in states.items() if state.dismissed or state.applied]
+        details = list_job_details(conn, exclude_job_ids=hidden, **filters)
+    elif view in {'saved', 'applied'}:
+        selected = [job_id for job_id, state in states.items()
+                    if (state.saved and not state.dismissed if view == 'saved' else state.applied)]
+        # Workflow history survives closure and source URL corrections/unlinking.
+        details = list_job_details(conn, job_ids=selected, include_inactive=True, include_unlinked=True)
+    else:
+        raise ValueError('Unknown job view')
+    return [(item, states.get(item.job.id) or JobInteractionState(job_id=item.job.id, saved=False, dismissed=False, applied=False))
+            for item in details]
 
 
 def list_jobs(conn, **filters):
@@ -348,10 +378,22 @@ def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
            bool_or(e.interaction_type='save') AS saved,
            bool_or(e.interaction_type='dismiss') AS dismissed,
            bool_or(e.interaction_type='applied') AS applied,
-           max(e.created_at) AS last_interaction_at
+           max(e.created_at) AS last_interaction_at,
+           max(e.created_at) FILTER (WHERE e.interaction_type='save') AS saved_at,
+           max(e.created_at) FILTER (WHERE e.interaction_type='applied') AS applied_at,
+           max(e.id) AS last_event_id
     FROM job_interactions e JOIN lineage l ON l.original_id=e.canonical_job_id
     WHERE e.candidate_profile_id=%s AND l.merged_into_id IS NULL
     GROUP BY l.job_id ORDER BY l.job_id""", (profile_id, profile_id)).fetchall()
+
+
+def record_interaction_with_state(conn, profile_id, canonical_id, interaction_type):
+    # Use the reconciliation lock so the receipt and its state refer to one root ID.
+    with conn.transaction():
+        conn.execute('SELECT pg_advisory_xact_lock(%s)', (RECONCILIATION_LOCK,))
+        event = record_interaction(conn, profile_id, canonical_id, interaction_type)
+        state = next(row for row in interaction_states(conn, profile_id) if row['job_id'] == event['canonical_job_id'])
+        return {**event, 'interaction_state': state}
 
 
 def save_resume_text(conn, profile_id, filename, extracted_text):

@@ -1,32 +1,31 @@
-import type { InteractionEvent, InteractionState, InteractionStates, Recommendation } from '../types/jobs';
+import type { InteractionReceipt, InteractionState, InteractionStates, JobView, Recommendation } from '../types/jobs';
 
 export function emptyInteraction(jobId: number): InteractionState {
-  return { job_id: jobId, saved: false, dismissed: false, applied: false, last_interaction_at: null };
+  return { job_id: jobId, saved: false, dismissed: false, applied: false, last_interaction_at: null,
+    saved_at: null, applied_at: null, last_event_id: 0 };
 }
 
 export function indexInteractions(states: InteractionState[]): InteractionStates {
   return Object.fromEntries(states.map(state => [state.job_id, state]));
 }
 
-export function confirmInteraction(states: InteractionStates, requestedId: number, event: InteractionEvent): InteractionStates {
-  const old = states[requestedId] ?? emptyInteraction(requestedId);
-  const canonical = states[event.canonical_job_id] ?? emptyInteraction(event.canonical_job_id);
-  const times = [old.last_interaction_at, canonical.last_interaction_at, event.created_at]
-    .filter((value): value is string => value !== null)
-    .sort((left, right) => Date.parse(right) - Date.parse(left));
-  const state = {
-    saved: old.saved || canonical.saved || event.interaction_type === 'save',
-    dismissed: old.dismissed || canonical.dismissed || event.interaction_type === 'dismiss',
-    applied: old.applied || canonical.applied || event.interaction_type === 'applied',
-    last_interaction_at: times[0],
-  };
-  // A stale displayed ID may have merged while the request was in flight.
-  return { ...states, [requestedId]: { ...state, job_id: requestedId },
-    [event.canonical_job_id]: { ...state, job_id: event.canonical_job_id } };
+export function confirmInteraction(states: InteractionStates, requestedId: number, receipt: InteractionReceipt): InteractionStates {
+  const incoming = receipt.interaction_state;
+  // Install SQL-derived snapshots, never replay event types in the browser. The
+  // event cursor avoids stale responses and JavaScript timestamp precision loss.
+  const snapshots = [incoming, states[requestedId], states[incoming.job_id]].filter((state): state is InteractionState => Boolean(state));
+  const latest = snapshots.reduce((best, state) => state.last_event_id > best.last_event_id ? state : best);
+  return { ...states, [requestedId]: { ...latest, job_id: requestedId },
+    [incoming.job_id]: { ...latest, job_id: incoming.job_id } };
 }
 
-export function visibleRecommendations(recommendations: Recommendation[], states: InteractionStates): Recommendation[] {
-  return recommendations.filter(({ job }) => !states[job.id]?.dismissed && !['closed', 'dead'].includes(job.status));
+export function visibleJobs(view: JobView, jobs: Recommendation[], states: InteractionStates): Recommendation[] {
+  return jobs.filter(({ job }) => {
+    const state = states[job.id] ?? emptyInteraction(job.id);
+    if (view === 'applied') return state.applied;
+    if (view === 'saved') return state.saved && !state.dismissed;
+    return !state.dismissed && !state.applied && !['closed', 'dead'].includes(job.status);
+  });
 }
 
 export function applicationUrl(value: string | null): string | null {

@@ -126,7 +126,7 @@ or year earns 0, even if the other part agrees. Unstated information is not gues
 
 ## API contract and ordering
 
-`GET /api/recommendations?min_score=20` returns `List[MatchResult]`:
+`GET /api/recommendations?min_score=20` returns scored candidate jobs, extending `MatchResult`:
 
 ```text
 job: CanonicalJob (the existing seven fields)
@@ -137,15 +137,20 @@ location_score: integer 0..20
 term_score: integer 0..10
 matched_skills: list of readable labels
 reasons: list of evidence explanations
+interaction_state: SQL-derived workflow flags, timestamps, and event cursor
 ```
 
 `min_score` is inclusive, defaults to 0, and validates 0–100 (invalid values receive
 HTTP 422). An empty profile still returns visible jobs with zero scores and empty
 reasons. Closed/dead canonical jobs are excluded; unknown jobs follow current feed
-visibility. No profile ID or authentication is introduced. A missing development
+visibility. Discovery also excludes dismissed and applied jobs using PostgreSQL
+state. Saved jobs remain eligible unless dismissed/applied. No profile ID or authentication is introduced. A missing development
 profile returns HTTP 503 without reseeding; database failures use the existing
 sanitized HTTP 503 handler.
 
 Sort order is score descending, exact `posted_at` descending with nulls last, then
 canonical ID descending. Posting date breaks ties and never earns points. The
-existing jobs feed, UI ordering, ingestion, and reconciliation are unchanged.
+workflow visibility is separate from score calculation. `/api/saved` and
+`/api/applied` use the same component calculations, including for retained closed
+jobs, but sort by latest save/application time. Interactions never add or subtract
+points. See [interactions.md](interactions.md) for collection membership and history.

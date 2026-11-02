@@ -107,6 +107,9 @@ p.field-error { margin: 7px 0 0; }
 .job-company { color: var(--muted); font-size: 12px; margin: 0 0 7px; }
 .job-information h2 { font-size: 18px; font-weight: 500; line-height: 1.4; letter-spacing: -.2px; margin: 0 0 8px; overflow-wrap: anywhere; }
 .job-meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.applied-date, .job-availability { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+.workflow-notice { font-size: 12px; color: #646a4b; margin: -12px 0 20px; }
+.workflow-notice:empty { display: none; }
 .match-toggle { background: transparent; border: 0; padding: 0 0 4px; color: var(--accent); text-align: right; flex-shrink: 0; border-radius: 2px; }
 .match-score { display: block; font-size: 21px; line-height: 1.25; font-weight: 500; }
 .match-score small { color: var(--muted); font-size: 11px; font-weight: 400; }
@@ -132,6 +135,8 @@ p.field-error { margin: 7px 0 0; }
 .recommendations-empty { color: var(--muted); font-size: 14px; padding: 24px 0; }
 @media (max-width: 760px) {
   .top-nav { padding: 0 24px; height: 70px; }
+  .top-nav { height: auto; min-height: 70px; padding-top: 16px; flex-wrap: wrap; row-gap: 10px; }
+  .nav-links { width: 100%; height: 40px; gap: 24px; }
   .profile-page { padding: 30px 24px; }
   .profile-layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .margin-note { display: none; }
@@ -142,7 +147,7 @@ p.field-error { margin: 7px 0 0; }
   .recommendations-intro > span { display: block; margin-top: 8px; }
 }
 @media (max-width: 440px) {
-  .top-nav { padding: 0 20px; height: 66px; }
+  .top-nav { padding: 16px 20px 0; height: auto; }
   .wordmark { font-size: 16px; gap: 8px; }
   .brand-mark { width: 19px; height: 19px; }
   .nav-links { gap: 14px; }

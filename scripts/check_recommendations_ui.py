@@ -107,6 +107,14 @@ try:
             page.unroute(path)
             expect(card(first).get_by_role('button', name='Job saved', exact=True)).to_have_attribute('aria-pressed', 'true')
             assert count('save') == 1
+            page.reload()
+            expect(card(first).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
+            page.get_by_role('link', name='Saved', exact=True).click()
+            expect(card(first).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
+            page.reload()
+            expect(card(first)).to_be_visible()
+            page.get_by_role('link', name='Recommended', exact=True).click()
+            expect(card(first)).to_be_visible()
 
             page.route(path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
             with page.expect_popup() as popup:
@@ -128,52 +136,92 @@ try:
             assert count('click') == 1
             expect(card(first).get_by_role('button', name='Mark job as applied', exact=True)).to_have_attribute('aria-pressed', 'false')
 
-            page.route(path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
-            card(first).get_by_role('button', name='Dismiss job', exact=True).click()
-            expect(card(first).get_by_text('Could not dismiss this job. Please try again.', exact=True)).to_be_visible()
+            dismiss_path = '**/api/jobs/%s/interactions' % second
+            page.route(dismiss_path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
+            card(second).get_by_role('button', name='Dismiss job', exact=True).click()
+            expect(card(second).get_by_text('Could not dismiss this job. Please try again.', exact=True)).to_be_visible()
             assert count('dismiss') == 0
-            page.unroute(path)
-            card(first).get_by_role('button', name='Dismiss job', exact=True).click()
-            expect(card(first)).to_have_count(0)
+            page.unroute(dismiss_path)
+            card(second).get_by_role('button', name='Dismiss job', exact=True).click()
+            expect(card(second)).to_have_count(0)
             assert count('dismiss') == 1
+            page.reload()
+            expect(card(first)).to_be_visible()
+            expect(card(second)).to_have_count(0)
 
-            card(second).get_by_role('button', name='Mark job as applied', exact=True).click()
-            expect(card(second).get_by_role('button', name='Job marked as applied', exact=True)).to_have_text('Applied')
+            card(third).get_by_role('button', name='Mark job as applied', exact=True).click()
+            expect(card(third)).to_have_count(0)
             assert count('applied') == 1
+            page.reload()
+            expect(card(first)).to_be_visible()
+            expect(card(third)).to_have_count(0)
+            page.get_by_role('link', name='Applied', exact=True).click()
+            expect(card(third).get_by_role('button', name='Job marked as applied', exact=True)).to_have_text('Applied')
+            expect(card(third).locator('.applied-date')).to_be_visible()
+            expect(card(third).get_by_role('link', name='Open application', exact=True)).to_be_visible()
+            expect(card(third).get_by_role('button', name='Dismiss job', exact=True)).to_have_count(0)
             card(third).get_by_role('button', name='Save job', exact=True).click()
             expect(card(third).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
             page.reload()
-            expect(card(first)).to_have_count(0)
-            expect(card(second).get_by_role('button', name='Job marked as applied', exact=True)).to_be_visible()
+            expect(card(third).get_by_role('button', name='Job marked as applied', exact=True)).to_be_visible()
             expect(card(third).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
-            assert page.request.get(base + '/api/recommendations').json() == original
+            page.get_by_role('link', name='Saved', exact=True).click()
+            expect(card(first)).to_be_visible()
+            expect(card(third).get_by_role('button', name='Job marked as applied', exact=True)).to_be_visible()
+            page.reload()
+            expect(card(third).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
+            assert {row['job']['id'] for row in page.request.get(base + '/api/recommendations').json()} == {first, ids[3]}
+            for endpoint in ('recommendations', 'saved', 'applied'):
+                for row in page.request.get(base + '/api/' + endpoint).json():
+                    old = next(item for item in original if item['job']['id'] == row['job']['id'])
+                    assert {key: value for key, value in row.items() if key != 'interaction_state'} == {key: value for key, value in old.items() if key != 'interaction_state'}
             assert conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall() == before
             events = conn.execute('SELECT * FROM job_interactions ORDER BY id').fetchall()
             assert [event['interaction_type'] for event in events] == ['save', 'click', 'dismiss', 'applied', 'save']
             assert all(event['candidate_profile_id'] == candidate['id'] for event in events)
 
-            card(second).get_by_role('button', name='Why this score for ' + original[1]['job']['title'], exact=True).click()
-            expect(card(second).locator('.score-breakdown')).to_be_visible()
+            card(third).get_by_role('button', name='Why this score for ' + original[2]['job']['title'], exact=True).click()
+            expect(card(third).locator('.score-breakdown')).to_be_visible()
             page.evaluate('document.fonts.ready')
             screenshots = ROOT / 'data' / 'screenshots'
             screenshots.mkdir(parents=True, exist_ok=True)
-            page.screenshot(path=str(screenshots / 'recommendations-desktop.png'), full_page=True)
+            page.screenshot(path=str(screenshots / 'saved-desktop.png'), full_page=True)
             page.set_viewport_size({'width': 390, 'height': 844})
             page.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            page.screenshot(path=str(screenshots / 'recommendations-mobile.png'), full_page=True)
+            page.screenshot(path=str(screenshots / 'saved-mobile.png'), full_page=True)
             page.set_viewport_size({'width': 320, 'height': 844})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            page.route('**/api/interactions', lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
+            page.route('**/api/saved', lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
             page.reload()
-            expect(page.get_by_text('Could not load recommendations and job states.', exact=True)).to_be_visible()
+            expect(page.get_by_text('Could not load saved jobs.', exact=True)).to_be_visible()
             expect(page.locator('.recommendation-card')).to_have_count(0)
-            page.unroute('**/api/interactions')
+            page.unroute('**/api/saved')
             page.get_by_role('button', name='Try again', exact=True).click()
-            expect(card(second)).to_be_visible()
+            expect(card(first)).to_be_visible()
+            card(first).get_by_role('button', name='Dismiss job', exact=True).click()
+            expect(card(first)).to_have_count(0)
+            page.reload()
+            expect(card(third)).to_be_visible()
+            expect(card(first)).to_have_count(0)
+            page.get_by_role('link', name='Applied', exact=True).click()
+            expect(card(third)).to_be_visible()
+            page.set_viewport_size({'width': 1280, 'height': 1000})
+            page.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+            page.screenshot(path=str(screenshots / 'applied-desktop.png'), full_page=True)
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(screenshots / 'applied-mobile.png'), full_page=True)
+            page.get_by_role('link', name='Recommended', exact=True).click()
+            expect(card(ids[3])).to_be_visible()
+            for hidden in (first, second, third):
+                expect(card(hidden)).to_have_count(0)
+            page.reload()
+            expect(card(ids[3])).to_be_visible()
             assert not errors, errors
             browser.close()
-            print('Recommendation browser + PostgreSQL checks passed: confirmed Save, Dismiss, Applied, click/new-tab safety, failed-click navigation, failure/retry, refresh persistence, isolated candidate events, unchanged scores, and mobile widths.')
+            print('Product-state browser + PostgreSQL checks passed: Recommended/Saved/Applied membership, Save+Applied and Save+Dismiss precedence, navigation, repeated refreshes, applied timestamp, click/new-tab safety, failed-click navigation, failure/retry, unchanged scores, and mobile widths.')
 
         for script in ('check_profile_ui.py', 'check_ui.py'):
             command = [sys.executable, str(ROOT / 'scripts' / script), '--url', base]

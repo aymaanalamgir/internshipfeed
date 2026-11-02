@@ -304,34 +304,40 @@ records can receive events too, so historical application actions remain valid.
 `GET /api/interactions` derives candidate-specific effective state. A recursive
 query follows canonical identity merge redirects from each historical event ID,
 then groups by the surviving job. `bool_or` derives Saved, Dismissed, and Applied;
-`max(created_at)` across all event types gives the last interaction time. Repeated
+`max(created_at)` across all event types gives the last interaction time. Filtered
+maxima give `saved_at` and `applied_at`; `max(id)` gives a `last_event_id` snapshot
+cursor. These values are derived, not additional stored columns. Repeated
 events do not duplicate state rows. View/click-only jobs have all three flags
 false. Never-interacted jobs are absent and the frontend defaults their flags
 to false. History is not rewritten or deleted when jobs merge.
 
 These flags are monotonic because no unsave/undo events exist in this slice.
-Dismiss takes precedence for UI visibility, while an applied nondismissed card
-remains visible with its Applied label. Interaction state does not affect matching
+Recommended discovery requires not dismissed and not applied. Saved requires
+saved and not dismissed, while Applied requires applied regardless of the other
+flags. Thus a saved/applied job remains in both history views; a saved/dismissed
+job is absent from discovery and Saved. Interaction state does not affect matching
 scores or canonical job fields. No migration or extra state table was needed.
 
 Repository helpers expose the development profile, append interaction events,
 and save extracted résumé text. The React profile interface at `/profile` consumes
 GET/PUT profile and POST résumé APIs; the existing vanilla feed remains at `/feed`.
 See [frontend.md](frontend.md) for build and development details. Résumé-to-profile
-suggestions, authentication, and dedicated Saved/Applied views are future work.
+suggestions and authentication are future work.
 
 ## On-request recommendations
 
 Candidate Profile + Canonical Jobs → Deterministic Matching → Recommendations API
-is implemented by `matching.py` and `GET /api/recommendations`. The endpoint reuses
-`development_profile()` and `list_job_details()`; it contains no SQL. The latter
-already provides visible canonical jobs, persisted keyword lists, and alternate
-source observations, so no schema or query changes were necessary.
+is implemented by `matching.py` and `GET /api/recommendations`. The API uses
+`candidate_job_details()` to combine `interaction_states()` with existing canonical
+job/source metadata loading. Recommended, Saved, and Applied share this query
+layer and the same pure matcher. Normal `/api/jobs` and `/api/feed` discovery also
+exclude dismissed/applied jobs; raw repository helpers remain available for
+ingestion and diagnostics.
 
 Matching is rule-based, string-based, skills-based, and explainable. The fixed
 weights are role 40, skills 30, location 20, and term 10. Results contain the same
-seven-field canonical job plus component scores, total, matched skills, and
-evidence reasons. Optional `min_score` is an integer in 0–100, default 0.
+seven-field canonical job plus component scores, total, matched skills,
+evidence reasons, and `interaction_state`. Optional `min_score` is an integer in 0–100, default 0.
 Closed/dead canonical jobs are excluded; unknown status follows feed visibility.
 
 Scores are calculated in Python on each request and never written to PostgreSQL.
@@ -340,6 +346,18 @@ request without a backfill. Résumé text, interaction events, graduation year,
 descriptions, and posting dates do not contribute points. Posting date and ID only
 break score ties. See [matching.md](matching.md) for exact rules and limitations.
 
+`GET /api/saved` and `GET /api/applied` return the same scored-card shape. Saved
+is newest-save first; Applied is newest-applied first, with ID descending for
+ties. Later clicks/views do not reorder application history. These collections
+retain inactive and unlinked canonical records. `list_job_details()` accepts
+selected/excluded ID sets and reads observations only for selected canonical
+jobs; empty history collections avoid unnecessary metadata reads. No raw events
+are transferred to Python for state replay.
+
+`record_interaction_with_state()` reuses the existing insert helper and returns
+the SQL-derived snapshot in one transaction. It uses the existing reconciliation
+advisory lock so canonical merges cannot change the root between write and receipt.
+
 ## Constraints and indexes
 
 The schema enforces source snapshot uniqueness, within-source posting uniqueness,
@@ -347,6 +365,10 @@ snapshot ownership, one canonical assignment per posting, valid match confidence
 valid statuses, event types, and profile/job foreign keys. Indexes support source
 posting lookups, source execution history, canonical dates/statuses, mapping joins,
 and interactions by profile/job and time.
+The existing `job_interactions_profile_time_idx(candidate_profile_id, created_at
+DESC)`, `job_interactions_job_time_idx(canonical_job_id, created_at DESC)`, and ID
+primary key were verified in PostgreSQL. Candidate-scoped aggregation and ID-based
+canonical lookups are supported without a new index or migration.
 
 ## Migration and legacy data
 

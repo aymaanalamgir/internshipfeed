@@ -189,7 +189,18 @@ class JobInteractionState(BaseModel):
     saved: bool
     dismissed: bool
     applied: bool
-    last_interaction_at: datetime
+    last_interaction_at: Optional[datetime] = None
+    saved_at: Optional[datetime] = None
+    applied_at: Optional[datetime] = None
+    last_event_id: int = Field(default=0, ge=0)
+
+
+class InteractionReceipt(JobInteraction):
+    interaction_state: JobInteractionState
+
+
+class CandidateJobView(MatchResult):
+    interaction_state: JobInteractionState
 
 
 class StoredCanonicalJob(CanonicalJob):

@@ -132,7 +132,7 @@ with sync_playwright() as playwright:
         page.unroute('**/api/profile')
         page.get_by_role('button', name='Save profile', exact=True).click()
         expect(page.locator('.save-message')).to_contain_text('Saved')
-        page.get_by_role('link', name='Feed', exact=True).click()
+        page.locator('.wordmark').click()
         page.wait_for_function("document.querySelector('#summary')?.textContent.includes(' of ')")
         assert page.locator('#jobs tr').count() > 0
         page.get_by_role('link', name='Profile', exact=True).click()
