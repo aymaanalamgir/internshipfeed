@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .models import CanonicalJob, JobDetails
+from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
 
@@ -98,6 +98,23 @@ def local_mutation(request):
     expected = str(request.base_url).rstrip("/")
     if origin and origin != expected:
         raise HTTPException(403, "Cross-origin actions are not allowed.")
+
+
+@app.get("/api/profile", response_model=CandidateProfile)
+def profile(conn=Depends(connection)):
+    result = db.development_profile(conn)
+    if result is None:
+        raise HTTPException(503, "Development profile is missing. Initialize the database before using profiles.")
+    return result
+
+
+@app.put("/api/profile", response_model=CandidateProfile)
+def update_profile(update: CandidateProfileUpdate, request: Request, conn=Depends(connection)):
+    local_mutation(request)
+    result = db.update_development_profile(conn, update)
+    if result is None:
+        raise HTTPException(503, "Development profile is missing. Initialize the database before using profiles.")
+    return result
 
 
 @app.post("/api/sync", status_code=202)

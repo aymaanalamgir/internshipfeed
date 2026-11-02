@@ -18,6 +18,8 @@ flowchart TD
     F --> SS[(source_snapshots)]
     F --> RUN[(ingestion_runs: one per source)]
     JS[(job_sources)] --> F
+    CAND[Candidate] --> PROFILE[FastAPI profile API]
+    PROFILE --> CP[(candidate_profiles)]
     CP[(candidate_profiles)] --> E[(job_interactions)]
     C --> E
     CP --> RES[(resumes: extracted text and metadata)]
@@ -139,6 +141,8 @@ remain local diagnostics/replay artifacts.
 
 ## API
 
+- `GET /api/profile`: the seeded development candidate profile, including ID and timestamps.
+- `PUT /api/profile`: replace all five editable fields; return the normalized, persisted profile.
 - `GET /api/sources`: configured datasets, including source IDs and enabled state.
 - `GET /api/jobs`: seven-field canonical jobs; optional `source_id` (dataset ID), `source` (repository URL), `status`, and `q` filters.
 - `GET /api/jobs/{id}`: a canonical job; merged IDs resolve to their survivor.
@@ -148,9 +152,32 @@ remain local diagnostics/replay artifacts.
 - `GET /api/ingestion-runs`, `GET /api/ingestion-runs/latest`, `GET /api/ingestion-runs/{uuid}`: per-source operational records; the list accepts `source_id`.
 - `GET /api/health`: database connectivity; `GET /docs`: API documentation.
 
-The sync action is local-only. Internet deployment needs an authenticated operator
-interface and durable background worker management. This stage seeds one development
-candidate profile and creates résumé/event storage foundations.
+Sync and profile updates use the existing local-only mutation policy. Internet
+deployment needs an authenticated operator interface and durable background worker
+management.
+
+Candidate profile persistence + FastAPI profile API is implemented using the one
+seeded development profile. PUT requires `target_roles`, `skills`,
+`preferred_locations`, `preferred_terms`, and `graduation_year`, even when clearing
+them with empty lists and null. List items must be strings; whitespace and blank
+items are removed, and exact case-sensitive duplicates keep their first order and
+spelling. Graduation year must be null or an integer from 1900 to 2200, matching
+the existing database constraint. Extra fields (including IDs/timestamps), missing
+fields, and invalid types receive HTTP 422. A missing seed or unavailable database
+receives HTTP 503. Reads never create a profile.
+
+For example, with the application running:
+
+```sh
+curl http://127.0.0.1:8000/api/profile
+curl -X PUT http://127.0.0.1:8000/api/profile \
+  -H 'Content-Type: application/json' \
+  -d '{"target_roles":["Software Engineering","Backend Engineering"],"skills":["Python","SQL"],"preferred_locations":["Toronto","Ottawa"],"preferred_terms":["Summer 2027"],"graduation_year":2027}'
+curl http://127.0.0.1:8000/api/profile
+```
+
+Résumé/event tables and helpers remain storage foundations. Profile editing UI,
+résumé upload/extraction, recommendations/matching, and authentication are future work.
 
 ## Tests
 
@@ -168,7 +195,9 @@ python scripts/test_with_postgres.py
 Tests cover source parsing, snapshot deduplication/ownership, per-source runs,
 raw versus normalized values, within-source identities, cross-source URL matching,
 canonical metadata, disabled sources, failure isolation, migration preservation,
-profile seeding, résumé text, event append semantics, and API/UI contracts.
+profile seeding, profile API validation/persistence/timestamps, résumé text,
+event append semantics, and API/UI contracts. Database tests isolate both their
+schemas and advisory sync-lock keys from the running application.
 
 ## Modules
 

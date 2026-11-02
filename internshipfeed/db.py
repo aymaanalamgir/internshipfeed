@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import replace
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote, urlparse
 
 import psycopg
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .models import CanonicalJob, JobDetails, JobKeywords, JobListing, SourceJobReference
+from .models import CandidateProfileUpdate, CanonicalJob, JobDetails, JobKeywords, JobListing, SourceJobReference
 from .reconciliation import RECONCILIATION_LOCK, backfill, canonicalize_url, link_posting, reconcile, refresh_canonical, root_id
 from .sources import SOURCES, get_source
 
@@ -312,8 +313,18 @@ def get_ingestion_run(conn, run_id):
     return conn.execute('SELECT * FROM ingestion_runs WHERE id=%s', (run_id,)).fetchone()
 
 
-def development_profile(conn):
+def development_profile(conn: psycopg.Connection) -> Optional[dict]:
     return conn.execute('SELECT * FROM candidate_profiles ORDER BY id LIMIT 1').fetchone()
+
+
+def update_development_profile(conn: psycopg.Connection, update: CandidateProfileUpdate) -> Optional[dict]:
+    # psycopg adapts these Python lists to PostgreSQL text arrays, including [].
+    # The existing trigger alone owns updated_at; identity/created_at are untouched.
+    return conn.execute("""UPDATE candidate_profiles SET
+        target_roles=%s, skills=%s, preferred_locations=%s, preferred_terms=%s, graduation_year=%s
+        WHERE id=(SELECT id FROM candidate_profiles ORDER BY id LIMIT 1)
+        RETURNING *""", (update.target_roles, update.skills, update.preferred_locations,
+                          update.preferred_terms, update.graduation_year)).fetchone()
 
 
 def record_interaction(conn, profile_id, canonical_id, interaction_type):

@@ -40,6 +40,13 @@ class DatabaseTests(unittest.TestCase):
         self.connect = lambda: original_connect(self.dsn)
         self.conn = self.connect()
         db.initialize(self.conn)
+        # Advisory locks are database-wide, unlike the per-test schema. Keep the
+        # real lock behavior while allowing tests beside a running application sync.
+        sync_lock = -int(uuid.uuid4().hex[:15], 16)
+        for module in ('internshipfeed.ingestion', 'internshipfeed.sync', 'internshipfeed.api'):
+            lock_patch = patch(module + '.SYNC_LOCK', sync_lock)
+            lock_patch.start()
+            self.addCleanup(lock_patch.stop)
         self.records = parse_readme(FIXTURE.read_text())
         self.job = self.prepare(normalize(self.records[0], SOURCE_URL, "a"))
 
@@ -430,6 +437,130 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
         db.initialize(self.conn)
         self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
+
+    def test_profile_api_returns_seeded_profile(self):
+        seeded = db.development_profile(self.conn)
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            response = client.get('/api/profile')
+        self.assertEqual(response.status_code, 200)
+        profile = response.json()
+        self.assertEqual(set(profile), {'id', 'target_roles', 'skills', 'preferred_locations',
+                                        'preferred_terms', 'graduation_year', 'created_at', 'updated_at'})
+        self.assertEqual(profile['id'], seeded['id'])
+        self.assertGreater(profile['id'], 0)
+        for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms'):
+            self.assertIsInstance(profile[key], list)
+            self.assertEqual(profile[key], seeded[key])
+            self.assertEqual(profile[key], [])
+        self.assertIsNone(profile['graduation_year'])
+        for key in ('created_at', 'updated_at'):
+            self.assertEqual(datetime.fromisoformat(profile[key].replace('Z', '+00:00')), seeded[key])
+
+    def test_profile_full_update_persists_arrays_identity_and_timestamps(self):
+        payload = {
+            'target_roles': ['Software Engineering', 'Data Engineering'],
+            'skills': ['Python', 'SQL'], 'preferred_locations': ['Toronto', 'Ottawa'],
+            'preferred_terms': ['Summer 2027'], 'graduation_year': 2027,
+        }
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            before = client.get('/api/profile').json()
+            response = client.put('/api/profile', json=payload)
+            self.assertEqual(response.status_code, 200)
+            after = response.json()
+            self.assertEqual(client.get('/api/profile').json(), after)
+        for key, value in payload.items():
+            self.assertEqual(after[key], value)
+        self.assertEqual(after['id'], before['id'])
+        self.assertEqual(after['created_at'], before['created_at'])
+        self.assertGreater(datetime.fromisoformat(after['updated_at'].replace('Z', '+00:00')),
+                           datetime.fromisoformat(before['updated_at'].replace('Z', '+00:00')))
+        stored = self.conn.execute('SELECT * FROM candidate_profiles WHERE id=%s', (after['id'],)).fetchone()
+        for key, value in payload.items():
+            self.assertEqual(stored[key], value)
+        self.assertEqual(stored['updated_at'], datetime.fromisoformat(after['updated_at'].replace('Z', '+00:00')))
+        types = self.conn.execute('SELECT pg_typeof(target_roles)::text AS roles, pg_typeof(skills)::text AS skills, pg_typeof(preferred_locations)::text AS locations, pg_typeof(preferred_terms)::text AS terms FROM candidate_profiles').fetchone()
+        self.assertEqual(set(types.values()), {'text[]'})
+        db.initialize(self.conn)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
+        self.assertEqual(db.development_profile(self.conn), stored)
+
+    def test_profile_update_normalizes_all_lists_before_persistence(self):
+        payload = {
+            'target_roles': [' Software Engineering ', 'Software Engineering', ''],
+            'skills': ['Python', ' Python ', 'SQL', ''],
+            'preferred_locations': ['Toronto', ' Toronto '],
+            'preferred_terms': ['Summer 2027', 'Summer 2027'], 'graduation_year': 2027,
+        }
+        expected = {
+            'target_roles': ['Software Engineering'], 'skills': ['Python', 'SQL'],
+            'preferred_locations': ['Toronto'], 'preferred_terms': ['Summer 2027'], 'graduation_year': 2027,
+        }
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            response = client.put('/api/profile', json=payload)
+        self.assertEqual(response.status_code, 200)
+        stored = db.development_profile(self.conn)
+        for key, value in expected.items():
+            self.assertEqual(response.json()[key], value)
+            self.assertEqual(stored[key], value)
+
+    def test_profile_can_clear_all_preferences_and_graduation_year(self):
+        populated = {key: ['example'] for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms')}
+        populated['graduation_year'] = 2027
+        empty = {key: [] for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms')}
+        empty['graduation_year'] = None
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            first = client.put('/api/profile', json=populated)
+            self.assertEqual(first.status_code, 200)
+            response = client.put('/api/profile', json=empty)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['id'], first.json()['id'])
+            self.assertEqual(client.get('/api/profile').json(), response.json())
+        for key, value in empty.items():
+            self.assertEqual(response.json()[key], value)
+            self.assertEqual(db.development_profile(self.conn)[key], value)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
+
+    def test_profile_api_rejects_invalid_payloads_without_modifying_row(self):
+        payload = {key: [] for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms')}
+        payload['graduation_year'] = None
+        invalid = [{'skills': []}]
+        for key in payload:
+            invalid.append({field: value for field, value in payload.items() if field != key})
+        for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms'):
+            for value in ('Python', None, [123], [True], [None]):
+                invalid.append(dict(payload, **{key: value}))
+        for value in (1899, 2201, 3000, '2027', 2027.5, True):
+            invalid.append(dict(payload, graduation_year=value))
+        for key in ('id', 'created_at', 'updated_at', 'admin', 'favorite_color'):
+            invalid.append(dict(payload, **{key: 'unexpected'}))
+        before = db.development_profile(self.conn)
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for body in invalid:
+                with self.subTest(payload=body):
+                    self.assertEqual(client.put('/api/profile', json=body).status_code, 422)
+        self.assertEqual(db.development_profile(self.conn), before)
+
+    def test_profile_missing_fails_clearly_without_creating_another_row(self):
+        from internshipfeed.models import CandidateProfileUpdate
+        self.conn.execute('DELETE FROM candidate_profiles')
+        empty = {key: [] for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms')}
+        empty['graduation_year'] = None
+        self.assertIsNone(db.update_development_profile(self.conn, CandidateProfileUpdate(**empty)))
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            responses = [client.get('/api/profile'), client.put('/api/profile', json=empty)]
+        for response in responses:
+            self.assertEqual(response.status_code, 503)
+            self.assertIn('Development profile is missing', response.json()['detail'])
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 0)
+
+    def test_profile_update_reuses_local_mutation_policy(self):
+        payload = {key: [] for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms')}
+        payload['graduation_year'] = None
+        before = db.development_profile(self.conn)
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            response = client.put('/api/profile', json=payload, headers={'Origin': 'https://evil.example'})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(db.development_profile(self.conn), before)
 
     def test_identical_snapshots_deduplicate_per_source(self):
         source = db.ensure_source(self.conn, self.job.source)

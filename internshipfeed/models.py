@@ -6,6 +6,36 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class CandidateProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int = Field(gt=0)
+    target_roles: List[str]
+    skills: List[str]
+    preferred_locations: List[str]
+    preferred_terms: List[str]
+    graduation_year: Optional[int]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CandidateProfileUpdate(BaseModel):
+    """Complete editable state; even a nullable graduation year is required."""
+    model_config = ConfigDict(extra="forbid")
+    target_roles: List[str]
+    skills: List[str]
+    preferred_locations: List[str]
+    preferred_terms: List[str]
+    graduation_year: Optional[int] = Field(ge=1900, le=2200, strict=True)
+
+    @field_validator("target_roles", "skills", "preferred_locations", "preferred_terms", mode="before")
+    @classmethod
+    def normalize_preferences(cls, value: object) -> List[str]:
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError("Expected a list of strings")
+        # Exact, case-sensitive duplicates preserve the first spelling and order.
+        return list(dict.fromkeys(item.strip() for item in value if item.strip()))
+
+
 class JobKeywords(BaseModel):
     model_config = ConfigDict(extra="forbid")
     languages: List[str] = Field(default_factory=list)

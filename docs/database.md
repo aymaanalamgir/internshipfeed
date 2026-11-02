@@ -223,6 +223,33 @@ canonical metadata commit together. Partial row failures preserve committed work
 migration creates one empty development profile, and a trigger maintains its
 update timestamp. No authentication schema is required for this stage.
 
+Candidate profile persistence + FastAPI profile API is implemented:
+
+- `GET /api/profile` returns the existing development row with all stored profile fields.
+- `PUT /api/profile` replaces all five editable fields and returns the stored row.
+
+`development_profile()` selects the lowest-ID row, preserving the existing
+single-profile convention. `update_development_profile()` updates that same row
+with `UPDATE ... RETURNING *`; it never inserts a profile. ID and `created_at`
+remain unchanged. The migration's `candidate_profiles_updated` trigger sets
+`updated_at` using `clock_timestamp()`, including for repeated identical PUTs.
+psycopg passes Python lists directly as PostgreSQL `text[]`, including empty lists.
+
+`CandidateProfileUpdate` requires every editable field. Its lists must contain
+strings; trimming removes surrounding whitespace, blank items disappear, and
+exact case-sensitive duplicates retain the first occurrence's spelling and order.
+Graduation year is required but nullable, with strict integer values between 1900
+and 2200, matching the existing database range. Client-supplied IDs, timestamps,
+and other extra fields are rejected with HTTP 422, as are incomplete/invalid
+requests. `CandidateProfile` is the response model including stored timestamps.
+PUT follows the existing local-only, same-origin mutation policy.
+
+Missing profiles return HTTP 503 with an initialization message; GET/PUT never
+silently reseed. Migration tracking remains responsible for the single initial
+insert, and repeated initialization preserves both the row count and saved values.
+Storage errors use the API's existing HTTP 503 handler without returning PostgreSQL
+exception details. No schema migration was needed for this API slice.
+
 `resumes` contains `id`, `candidate_profile_id`, `filename`, `extracted_text`, and
 `uploaded_at`. It stores text/metadata only: there is no raw binary column or
 permanent file path. Upload/extraction interfaces can be added later. Deleting a
@@ -234,8 +261,8 @@ profile cascades to its résumé records and interactions.
 records. There is no uniqueness constraint that overwrites interaction history.
 
 Repository helpers expose the development profile, append interaction events,
-and save extracted résumé text. These tables are the foundation for later profile
-and interaction UI work.
+and save extracted résumé text. Profile editing UI, résumé upload/extraction,
+matching/recommendations, authentication, and interaction endpoints are future work.
 
 ## Constraints and indexes
 
