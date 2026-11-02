@@ -1,0 +1,6 @@
+# User crontab example. Replace all paths before adding via `crontab -e`.
+# Runs at 09:00 in the cron host's timezone; the host and PostgreSQL must be running.
+# On Cronie hosts that support it, optionally set CRON_TZ=America/Toronto.
+# Plain macOS/other cron implementations may require configuring the host timezone.
+# Create the data directory before installing this entry.
+0 9 * * * cd /absolute/path/to/internshipfeed && /absolute/path/to/internshipfeed/.venv/bin/python -m internshipfeed.daily_refresh >> /absolute/path/to/internshipfeed/data/daily-refresh.log 2>&1

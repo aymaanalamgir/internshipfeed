@@ -12,10 +12,11 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db
 from .models import (CandidateJobView, CandidateProfile, CandidateProfileUpdate, CanonicalJob,
-                     InteractionReceipt, InteractionRequest, JobDetails, JobInteractionState, RecommendedJobView, Resume, ResumeMetadata)
+                     InteractionReceipt, InteractionRequest, JobDetails, JobInteractionState, RecommendedJobView, Resume, ResumeMetadata, ResumeSkillSuggestions)
 from .matching import score_job
 from .behavioral import build_behavior_profile
 from .recommendations import rank_recommendations
+from .resume_skills import extract_resume_skills, skill_aliases
 from .resumes import MAX_UPLOAD_BYTES, ResumeExtractionError, extract_pdf_text
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
@@ -168,6 +169,21 @@ def update_profile(update: CandidateProfileUpdate, request: Request, conn=Depend
 @app.get("/api/resumes/latest", response_model=Optional[ResumeMetadata])
 def latest_resume(conn=Depends(connection)):
     return db.latest_resume_metadata(conn, _development_candidate(conn)['id'])
+
+
+@app.get("/api/resumes/{resume_id}/skill-suggestions", response_model=ResumeSkillSuggestions)
+def resume_skill_suggestions(resume_id: int, conn=Depends(connection)):
+    candidate = _development_candidate(conn)
+    resume = conn.execute('SELECT id, extracted_text FROM resumes WHERE id=%s AND candidate_profile_id=%s',
+                          (resume_id, candidate['id'])).fetchone()
+    if resume is None:
+        raise HTTPException(404, "Resume not found")
+    try:
+        return {'resume_id': resume['id'], 'skills': extract_resume_skills(resume['extracted_text']), 'aliases': skill_aliases()}
+    except Exception:
+        # Never include stored résumé text in logs or the error response.
+        logger.warning('Resume skill suggestions unavailable')
+        raise HTTPException(503, 'Skill suggestions are unavailable. Please try again.') from None
 
 
 @app.get("/api/interactions", response_model=List[JobInteractionState])

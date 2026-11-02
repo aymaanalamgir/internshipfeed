@@ -434,6 +434,32 @@ def latest_resume_metadata(conn, profile_id):
     return conn.execute('SELECT id, candidate_profile_id, filename, uploaded_at FROM resumes WHERE candidate_profile_id=%s ORDER BY uploaded_at DESC, id DESC LIMIT 1', (profile_id,)).fetchone()
 
 
+def unnotified_job_ids(conn, profile_id, job_ids):
+    """Resolve both discovery and notification aliases before deduplicating email."""
+    if not job_ids:
+        return []
+    return [row['id'] for row in conn.execute("""WITH RECURSIVE lineage AS (
+        SELECT i.id, i.merged_into_id, false AS notified FROM canonical_job_identities i WHERE i.id=ANY(%s)
+        UNION
+        SELECT i.id, i.merged_into_id, true AS notified FROM canonical_job_identities i
+        JOIN job_notifications n ON n.canonical_job_id=i.id WHERE n.candidate_profile_id=%s AND n.channel='email'
+        UNION
+        SELECT i.id, i.merged_into_id, l.notified FROM lineage l JOIN canonical_job_identities i ON i.id=l.merged_into_id
+    ) SELECT DISTINCT id FROM lineage WHERE merged_into_id IS NULL AND NOT notified
+      AND id NOT IN (SELECT id FROM lineage WHERE merged_into_id IS NULL AND notified) ORDER BY id""",
+        (job_ids, profile_id)).fetchall()]
+
+
+def record_job_notifications(conn, profile_id, job_ids, provider_message_id):
+    """Only call after provider acceptance; record the whole digest atomically."""
+    with conn.transaction():
+        return conn.execute("""INSERT INTO job_notifications
+            (candidate_profile_id, canonical_job_id, channel, provider_message_id)
+            SELECT %s, id, 'email', %s FROM unnest(%s::bigint[]) AS jobs(id)
+            ON CONFLICT (candidate_profile_id, canonical_job_id, channel) DO NOTHING
+            RETURNING canonical_job_id""", (profile_id, provider_message_id, job_ids)).fetchall()
+
+
 def main():
     with connect() as conn:
         initialize(conn)

@@ -1,8 +1,10 @@
+import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { addTag, removeTag } from '../lib/form';
 import { SkillTag } from './SkillTag';
 
 interface Props {
+  children?: ReactNode;
   id: string;
   label: string;
   placeholder: string;
@@ -13,7 +15,7 @@ interface Props {
   disabled: boolean;
 }
 
-export function TagInput({ id, label, placeholder, values, input, onChange, onInput, disabled }: Props) {
+export function TagInput({ id, label, placeholder, values, input, onChange, onInput, disabled, children }: Props) {
   const [announcement, setAnnouncement] = useState('');
 
   function commit() {
@@ -40,6 +42,7 @@ export function TagInput({ id, label, placeholder, values, input, onChange, onIn
             ))}
           </ul>
         )}
+        {children}
         <div className="tag-entry">
           <input id={id} value={input} disabled={disabled} placeholder={placeholder} autoComplete="off"
             aria-describedby="tag-instructions" onChange={event => { onInput(event.target.value); setAnnouncement(''); }}

@@ -259,7 +259,8 @@ extraction → PostgreSQL persistence. It uses the existing database connection
 dependency, `development_profile()` lookup, and `save_resume_text()` insert. The
 caller cannot select a profile; every upload appends a new history row for the
 lowest-ID development profile. The profile itself remains unchanged. No migration
-was needed. There is no résumé retrieval/management endpoint in this slice.
+was needed. Metadata and skill-suggestion reads are scoped to this candidate;
+there is no full-text résumé history/management endpoint.
 
 The multipart field is `file` (`UploadFile`). A successful request returns HTTP 201
 with a `Resume` response: `id`, `candidate_profile_id`, `filename`, `extracted_text`,
@@ -386,6 +387,21 @@ the SQL-derived snapshot in one transaction. It uses the existing reconciliation
 advisory lock so canonical merges cannot change the root between write and receipt.
 
 ## Constraints and indexes
+
+`job_notifications` stores provider-accepted email history: candidate/job foreign
+keys, `channel='email'`, `provider_message_id`, and acceptance time (`sent_at`). The
+unique `(candidate_profile_id, canonical_job_id, channel)` constraint prevents
+duplicate ledger entries. Selection resolves historical canonical redirects so
+notification aliases remain deduplicated after merges. No recipient addresses or
+credentials are stored in this table or exposed through frontend APIs.
+
+Migration `009_job_notifications.sql` created the ledger;
+`010_email_notifications.sql` upgrades its provider column and channel constraint
+while preserving earlier audit rows. All runtime delivery uses email. Exact batch discovery IDs
+are stored in the existing `ingestion_batches.report.new_canonical_job_ids`; no
+recommendation scores or behavioral profiles are persisted. See
+[daily-refresh.md](daily-refresh.md) for orchestration, transaction boundaries,
+partial failures, and the external provider acceptance/recording limitation.
 
 The schema enforces source snapshot uniqueness, within-source posting uniqueness,
 snapshot ownership, one canonical assignment per posting, valid match confidence,

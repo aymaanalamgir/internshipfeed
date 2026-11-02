@@ -30,7 +30,7 @@ test('payload includes all five editable fields and excludes stored identity/tim
   });
 });
 test('saving includes pending input even without Enter and suppresses duplicates', () => {
-  const pending = { target_roles: 'Backend Engineering', skills: ' Python ', preferred_locations: 'Ottawa', preferred_terms: '' };
+  const pending = { target_roles: 'Backend Engineering', skills: ' Python ', preferred_locations: 'Ottawa' };
   assert.deepEqual(buildProfilePayload(toDraft(profile), pending), {
     target_roles: ['Software Engineering', 'Backend Engineering'], skills: ['Python'],
     preferred_locations: ['Toronto', 'Ottawa'], preferred_terms: ['Summer 2027'], graduation_year: 2027,

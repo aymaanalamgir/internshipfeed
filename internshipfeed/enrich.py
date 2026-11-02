@@ -10,7 +10,7 @@ from .fetch import fetch_text
 # Explicit vocabulary: matches come from descriptions, never from role guesses.
 VOCABULARY = {
     "languages": ["Python", "JavaScript", "TypeScript", "Java", "C++", "C#", "C", "Go", "Rust", "SQL", "Ruby", "Swift", "Kotlin", "Scala", "MATLAB", "R"],
-    "frameworks": ["React", "Next.js", "Angular", "Vue", "Django", "Flask", "FastAPI", "Spring", "Express", ".NET", "PyTorch", "TensorFlow", "scikit-learn"],
+    "frameworks": ["React", "React Native", "Next.js", "Angular", "Vue", "Django", "Flask", "FastAPI", "Spring", "Express", ".NET", "PyTorch", "TensorFlow", "scikit-learn"],
     "tools_and_platforms": ["AWS", "Azure", "GCP", "Docker", "Kubernetes", "Git", "Linux", "PostgreSQL", "MySQL", "MongoDB", "Redis", "Kafka", "Spark", "Node.js", "Terraform"],
     "concepts": ["machine learning", "data analysis", "distributed systems", "REST", "GraphQL", "CI/CD", "unit testing", "object-oriented", "agile"],
 }
@@ -110,6 +110,8 @@ def extract_keywords(description):
         for term in terms:
             # Special punctuation boundaries prevent Java matching JavaScript, C matching C++.
             pattern = r"(?<![\w+#])" + re.escape(term) + r"(?![\w+#])"
+            if term == "React":
+                pattern += r"(?!\s+Native\b)"
             if term == "R":
                 pattern += r"(?![&/])"
             flags = 0 if term in {"C", "R", "Go"} else re.I

@@ -30,7 +30,7 @@ COUNTERS = ("scraped", "parsed", "processed", "inserted", "updated", "skipped_du
 def new_run():
     return {"id": str(uuid.uuid4()), "started_at": datetime.now(timezone.utc).isoformat(),
             "finished_at": None, "source": "all", "status": "running", "stage": "fetching",
-            "sources": [], "errors": [], **dict.fromkeys(COUNTERS, 0)}
+            "sources": [], "errors": [], "new_canonical_job_ids": [], **dict.fromkeys(COUNTERS, 0)}
 
 
 def recover_interrupted(conn):
@@ -133,6 +133,9 @@ def run_ingestion(input_path=None, output=None, enrich=True, enrichment_limit=No
             if not lock_acquired:
                 raise RuntimeError("A sync is already running. View its progress in the UI.")
             recover_interrupted(conn)
+        # Capture identities under the same sync lock as the entire ingestion.
+        # first_seen_at can be inherited from an older source row after URL changes.
+        existing_ids = {row['id'] for row in conn.execute('SELECT id FROM canonical_job_identities')}
         db.record_batch(conn, run)
         snapshots = output / "snapshots"
         snapshots.mkdir(exist_ok=True)
@@ -208,6 +211,9 @@ def run_ingestion(input_path=None, output=None, enrich=True, enrichment_limit=No
                 logger.error("Source %s failed (%s); continuing other sources", source.key, type(exc).__name__)
             db.record_source_run(conn, report["id"], report)
             db.record_batch(conn, run)
+        run['new_canonical_job_ids'] = sorted(row['id'] for row in conn.execute(
+            'SELECT c.id FROM canonical_jobs c JOIN canonical_job_identities i ON i.id=c.id WHERE i.merged_into_id IS NULL')
+            if row['id'] not in existing_ids)
         run["reconciliation"] = db.reconciliation_stats(conn)
         run["source_failures"] = source_failures
         run["status"] = "failed" if selected and source_failures == len(selected) else "partial_failure" if source_failures or run["failed"] else "success"

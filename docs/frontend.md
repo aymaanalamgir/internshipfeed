@@ -126,7 +126,13 @@ screens, with an independently scrollable body and a persistent close control.
 Reduced-motion settings remove transitions.
 
 `ProfileDrawer` loads the development profile and reuses `ProfileForm`, `TagInput`,
-and `ResumeUpload`. Tags support Enter, removal, and duplicate handling. Explicit
+and `ResumeUpload`. Open-ended role/skill/location tags support Enter, removal,
+and duplicate handling; Enter guidance remains available to screen readers.
+`TermSelector` uses removable chips and one add dropdown for all fifteen
+Winter/Summer/Fall terms from 2026–2030. Selected options are disabled. Graduation
+year is a select with Not specified → null and 2026–2030; the backend still accepts
+its original integer/null range. Legacy stored terms/years are preserved rather
+than silently deleted. Explicit
 Save changes includes pending input and preserves the existing complete payload.
 Errors retain the draft; confirmation is subtle. Closing discards unsaved edits.
 The backend remains authoritative for profile validation and PDF limits.
@@ -138,6 +144,26 @@ endpoint. Upload still appends a résumé record; Replace selects the latest ver
 without changing profile fields or deleting history. Corrupt/type/size/page and
 network errors remain concise. Latest-file loading cannot overwrite a newer
 upload response. Raw document contents are never rendered or retained in UI state.
+
+`GET /api/resumes/{resume_id}/skill-suggestions` returns canonical skills and the
+matching system's alias map. `ProfileDrawer` fetches suggestions separately from
+upload, cancels stale requests, and accepts only a response for the current latest
+résumé. Upload success survives suggestion errors; the Skills section offers a
+separate retry. `SkillSuggestions` filters saved and draft skills (including pending
+input) through shared alias metadata. Clicking a chip or Add all updates only the
+profile draft; Save changes performs the existing complete PUT. Replacing a PDF
+changes suggestions while keeping selected skills. Empty detection and already
+selected results have quiet status text. No raw résumé text reaches UI state.
+
+```mermaid
+flowchart LR
+    PDF[Résumé PDF] --> TEXT[pdfplumber → stored text]
+    TEXT --> SUGGEST[Controlled technical vocabulary and shared aliases]
+    SUGGEST --> REVIEW[Suggested chips: user review]
+    REVIEW --> DRAFT[Local profile draft]
+    DRAFT --> SAVE[Explicit Save changes]
+    SAVE --> PROFILE[(Candidate profile)]
+```
 
 `JobDetailsDrawer` loads `/api/jobs/{id}/details`, renders plain escaped description
 text and available keyword groups, and reuses shared actions. Provenance is a
@@ -159,6 +185,9 @@ completion. No operational dashboard or backend diagnostics are exposed.
 | `src/components/Drawer.tsx` | Native dialog, focus handling, close/context behavior. |
 | `src/components/ProfileDrawer.tsx` | Profile loading/retry and form/upload composition. |
 | `src/components/ProfileForm.tsx` | Existing tag/preferences form, explicit save callback. |
+| `src/components/TermSelector.tsx` | Removable predefined terms and add select. |
+| `src/components/SkillSuggestions.tsx` | Alias-filtered draft-only suggestions and retry. |
+| `src/lib/profile-options.ts` | Bounded year/term choices and normalized skill comparison. |
 | `src/components/TagInput.tsx` | Editable shared tags and Enter/removal behavior. |
 | `src/components/ResumeUpload.tsx` | Compact upload/replace and persistent latest metadata. |
 | `src/components/RecommendationCard.tsx` | Rich shared Recommended/Saved/Applied card. |
@@ -184,7 +213,9 @@ completion. No operational dashboard or backend diagnostics are exposed.
 `web/app.js` are tiny compatibility redirects for cached older pages, with no
 legacy product UI. Backend `api.py` serves all views and attaches existing
 term/keyword metadata to collection cards; `models.py` defines those additions
-and a metadata-only résumé contract; `db.py` adds the latest metadata lookup.
+and metadata/suggestion résumé contracts; `db.py` supplies latest metadata.
+`resume_skills.py` detects technical phrases using the enrichment vocabulary and
+matching aliases, with longest-span precedence and deterministic sorted labels.
 Base profile scoring and authentication remain unchanged. Reversible Save/Applied
 actions use migration `008_reversible_interactions.sql` to extend the existing
 event-type constraint; all workflow state remains derived from event history.

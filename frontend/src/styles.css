@@ -108,7 +108,7 @@ body:has(dialog[open]) { overflow: hidden; }
 .tag-entry { display: flex; align-items: center; gap: var(--space-2); }
 .tag-entry input { flex: 1; width: 100%; border: 0; background: transparent; min-width: 0; min-height: 28px; padding: var(--space-1); }
 .enter-key { color: var(--text-muted); font-size: 12px; margin-right: var(--space-1); }
-.year-field input { width: 140px; }
+.year-field select { width: 140px; }
 .form-actions { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); border-top: 1px solid var(--border); padding-top: var(--space-6); margin-top: var(--space-6); }
 .save-message { font-size: 11px; color: var(--text-muted); }
 .saved { color: var(--accent); }
@@ -175,3 +175,11 @@ body:has(dialog[open]) { overflow: hidden; }
   .profile-field { margin-bottom: var(--space-4); }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+
+.skill-suggestions { border-top: 1px solid var(--border); padding: var(--space-3) 0; margin-top: var(--space-2); color: var(--text-muted); font-size: 11px; }
+.suggestion-heading { display: flex; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-2); }
+.skill-suggestions p { margin: 0; }
+.skill-suggestion { background: var(--surface); text-align: left; }
+.skill-suggestion:hover { border-color: var(--accent); color: var(--accent); }
+.skill-suggestion svg { width: 12px; height: 12px; flex-shrink: 0; }
+.profile-field > .tag-list { margin-bottom: var(--space-2); }

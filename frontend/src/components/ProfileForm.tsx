@@ -4,15 +4,18 @@ import type { CandidateProfile, TagField } from '../types/profile';
 import { updateProfile } from '../api/profile';
 import { buildProfilePayload, emptyPending, graduationYearError, toDraft } from '../lib/form';
 import { TagInput } from './TagInput';
+import { TermSelector } from './TermSelector';
+import { GRADUATION_YEARS, availableSkills } from '../lib/profile-options';
+import { SkillSuggestions } from './SkillSuggestions';
+import type { SuggestionState } from './SkillSuggestions';
 
 const FIELDS: { key: TagField; label: string; placeholder: string }[] = [
   { key: 'target_roles', label: 'Target roles', placeholder: 'Add a role…' },
   { key: 'skills', label: 'Skills', placeholder: 'Add a skill…' },
   { key: 'preferred_locations', label: 'Preferred locations', placeholder: 'Add a location…' },
-  { key: 'preferred_terms', label: 'Preferred terms', placeholder: 'Add a term…' },
 ];
 
-export function ProfileForm({ profile, onSaved, children }: { profile: CandidateProfile; onSaved?: () => void; children?: ReactNode }) {
+export function ProfileForm({ profile, onSaved, children, suggestions }: { suggestions?: SuggestionState; profile: CandidateProfile; onSaved?: () => void; children?: ReactNode }) {
   const [baseline, setBaseline] = useState(profile);
   const [draft, setDraft] = useState(() => toDraft(profile));
   const [pending, setPending] = useState(emptyPending);
@@ -47,7 +50,7 @@ export function ProfileForm({ profile, onSaved, children }: { profile: Candidate
 
   return (
     <form onSubmit={submit} noValidate aria-label="Candidate profile" aria-busy={saving}>
-      <div className="form-intro">
+      <div className="sr-only">
         <span id="tag-instructions">Type a value, then press Enter.</span>
       </div>
       <fieldset disabled={saving} className="profile-fields">
@@ -56,15 +59,22 @@ export function ProfileForm({ profile, onSaved, children }: { profile: Candidate
           <TagInput key={field.key} id={field.key} label={field.label} placeholder={field.placeholder}
             disabled={saving} values={draft[field.key]} input={pending[field.key]}
             onChange={values => { setDraft(current => ({ ...current, [field.key]: values })); edited(); }}
-            onInput={value => { setPending(current => ({ ...current, [field.key]: value })); edited(); }} />
+            onInput={value => { setPending(current => ({ ...current, [field.key]: value })); edited(); }}>
+            {field.key === 'skills' && suggestions && <SkillSuggestions state={suggestions} selected={[...draft.skills, pending.skills]}
+              disabled={saving} onAdd={values => { setDraft(current => ({ ...current, skills: [...current.skills,
+                ...availableSkills(values, [...current.skills, pending.skills], suggestions.data?.aliases ?? {})] })); edited(); }} />}
+          </TagInput>
         ))}
+        <TermSelector values={draft.preferred_terms} onChange={values => { setDraft(current => ({ ...current, preferred_terms: values })); edited(); }} />
         <div className="profile-field year-field">
           <label htmlFor="graduation-year">Graduation year <span className="optional">Optional</span></label>
-          <input id="graduation-year" type="number" inputMode="numeric" min="1900" max="2200" step="1"
-            value={draft.graduation_year} placeholder="e.g. 2027" aria-invalid={Boolean(yearError)}
+          <select id="graduation-year" value={draft.graduation_year} aria-invalid={Boolean(yearError)}
             aria-describedby={yearError ? 'year-error' : undefined}
-            onBlur={() => setYearError(graduationYearError(draft.graduation_year))}
-            onChange={event => { setDraft(current => ({ ...current, graduation_year: event.target.value })); setYearError(undefined); edited(); }} />
+            onChange={event => { setDraft(current => ({ ...current, graduation_year: event.target.value })); setYearError(undefined); edited(); }}>
+            <option value="">Not specified</option>
+            {draft.graduation_year && !GRADUATION_YEARS.includes(Number(draft.graduation_year)) && <option value={draft.graduation_year} disabled>{draft.graduation_year} (saved)</option>}
+            {GRADUATION_YEARS.map(year => <option key={year} value={year}>{year}</option>)}
+          </select>
           {yearError && <p className="field-error" id="year-error" role="alert">{yearError}</p>}
         </div>
       </fieldset>

@@ -16,7 +16,9 @@ function uploadError(error: unknown): string {
   return 'PDF upload failed. Please try again.';
 }
 
-export function ResumeUpload() {
+export function ResumeUpload({ onResumeChange }: { onResumeChange?: (resume: ResumeMetadata | null) => void }) {
+  const callback = useRef(onResumeChange);
+  callback.current = onResumeChange;
   const input = useRef<HTMLInputElement>(null);
   const [uploaded, setUploaded] = useState<ResumeMetadata | null>(null);
   const [selectedName, setSelectedName] = useState('');
@@ -29,7 +31,7 @@ export function ResumeUpload() {
     const controller = new AbortController();
     const version = uploadVersion.current;
     setLoadError(false);
-    getLatestResume(controller.signal).then(value => { if (!controller.signal.aborted && version === uploadVersion.current) setUploaded(value); })
+    getLatestResume(controller.signal).then(value => { if (!controller.signal.aborted && version === uploadVersion.current) { setUploaded(value); callback.current?.(value); } })
       .catch(() => { if (!controller.signal.aborted && version === uploadVersion.current) setLoadError(true); });
     return () => controller.abort();
   }, [attempt]);
@@ -46,7 +48,9 @@ export function ResumeUpload() {
     setUploading(true);
     try {
       const stored = await uploadResume(file);
-      setUploaded({ id: stored.id, candidate_profile_id: stored.candidate_profile_id, filename: stored.filename, uploaded_at: stored.uploaded_at });
+      const metadata = { id: stored.id, candidate_profile_id: stored.candidate_profile_id, filename: stored.filename, uploaded_at: stored.uploaded_at };
+      setUploaded(metadata);
+      callback.current?.(metadata);
       setLoadError(false);
     }
     catch (failure) { setError(uploadError(failure)); }

@@ -230,3 +230,9 @@ class StoredCanonicalJob(CanonicalJob):
     last_seen_at: datetime
     created_at: datetime
     updated_at: datetime
+
+
+class ResumeSkillSuggestions(BaseModel):
+    resume_id: int
+    skills: List[str]
+    aliases: dict[str, str]

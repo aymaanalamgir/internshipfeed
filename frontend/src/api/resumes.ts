@@ -1,4 +1,4 @@
-import type { ResumeMetadata } from '../types/profile';
+import type { ResumeMetadata, ResumeSkillSuggestions } from '../types/profile';
 import { requestJson } from './http';
 
 export const getLatestResume = (signal?: AbortSignal) => requestJson<ResumeMetadata | null>('/api/resumes/latest', { signal });
@@ -12,3 +12,5 @@ export async function uploadResume(file: File): Promise<ResumeMetadata> {
   });
   return { id, candidate_profile_id, filename, uploaded_at };
 }
+
+export const getSkillSuggestions = (id: number, signal?: AbortSignal) => requestJson<ResumeSkillSuggestions>(`/api/resumes/${id}/skill-suggestions`, { signal });

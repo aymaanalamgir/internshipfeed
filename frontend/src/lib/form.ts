@@ -1,9 +1,9 @@
 import type { CandidateProfile, PendingTags, ProfileDraft, ProfileValues, TagField } from '../types/profile';
 
-export const TAG_FIELDS: TagField[] = ['target_roles', 'skills', 'preferred_locations', 'preferred_terms'];
+export const TAG_FIELDS: TagField[] = ['target_roles', 'skills', 'preferred_locations'];
 
 export function emptyPending(): PendingTags {
-  return { target_roles: '', skills: '', preferred_locations: '', preferred_terms: '' };
+  return { target_roles: '', skills: '', preferred_locations: '' };
 }
 
 export function addTag(values: string[], input: string): string[] {
@@ -38,7 +38,7 @@ export function buildProfilePayload(draft: ProfileDraft, pending: PendingTags): 
     target_roles: addTag(draft.target_roles, pending.target_roles),
     skills: addTag(draft.skills, pending.skills),
     preferred_locations: addTag(draft.preferred_locations, pending.preferred_locations),
-    preferred_terms: addTag(draft.preferred_terms, pending.preferred_terms),
+    preferred_terms: [...draft.preferred_terms],
     graduation_year: draft.graduation_year.trim() ? Number(draft.graduation_year) : null,
   };
 }

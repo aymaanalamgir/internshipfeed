@@ -36,10 +36,38 @@ flowchart TD
     CP --> RES[(resumes: extracted text and metadata)]
     PDF[Resume PDF upload] --> EXTRACT[Local pdfplumber extraction]
     EXTRACT --> RES
+    RES --> SKILLS[Deterministic technical skill suggestions]
+    SKILLS --> REVIEW[User review in profile draft]
+    REVIEW --> CP
+    CRON[Daily host cron] --> INGEST[Existing multi-source ingestion]
+    INGEST --> F
+    INGEST --> NEW[Exact new canonical IDs from run]
+    NEW --> DIGEST
+    RANK --> DIGEST[New canonical jobs: threshold and top N]
+    DIGEST --> EMAIL[Resend HTML and text email]
+    EMAIL --> NOTIFICATIONS[(job_notifications)]
 ```
 
 The complete table structure, constraints, identity rules, indexes, migration,
 and example queries are documented in **[docs/database.md](docs/database.md)**.
+
+Daily automation is available as a one-shot command for external cron:
+
+```sh
+.venv/bin/python -m internshipfeed.daily_refresh --dry-run
+```
+
+It refreshes both enabled sources, records exact new canonical IDs, reuses the
+personalized ranker, and can send a Resend HTML/plain-text email digest of new
+matches. Defaults are final score ≥60 and at most five jobs. PostgreSQL history
+prevents ordinary duplicate sends, including after canonical merges. Configure
+`RESEND_API_KEY`, `DAILY_EMAIL_FROM`, and `DAILY_EMAIL_TO` in `.env`; the sender must
+be verified in Resend. `DAILY_NOTIFICATION_CHANNEL=email` is the only supported
+channel. Dry runs need no email credentials.
+See **[daily refresh setup, retry behavior, and cron examples](docs/daily-refresh.md)**.
+The schedule is external and is not installed automatically.
+The complete [profile/email implementation report](docs/profile-and-email-report.md)
+lists files, test results, assumptions, and code review points.
 
 ## Sources
 
@@ -232,7 +260,29 @@ earlier résumé versions. Only the basename, extracted text, candidate ID, and
 timestamp are stored; PDF bytes and temporary paths are not retained. Extraction
 does not modify the candidate profile or send its contents to external services.
 The response contains `id`, `candidate_profile_id`, `filename`, `extracted_text`,
-and `uploaded_at`. A résumé history endpoint and upload UI are not part of this slice.
+and `uploaded_at`; the frontend retains metadata only. Profile's Upload/Replace
+PDF uses the latest résumé for optional technical skill suggestions:
+
+```text
+PDF → pdfplumber → stored extracted text → controlled technical skills
+    → user selects suggestions → local draft → Save changes → candidate profile
+```
+
+`GET /api/resumes/{resume_id}/skill-suggestions` returns candidate-scoped
+`resume_id`, canonical `skills`, and shared normalization `aliases`, without raw
+text. Extraction reuses the job vocabulary and matching aliases, including
+Postgres → PostgreSQL, K8s → Kubernetes, NodeJS → Node.js, and Google Cloud → GCP.
+Longest phrase matching distinguishes React Native/React and C++/C#/C; JavaScript
+does not imply Java. Results are deduplicated and sorted. Generic prose is excluded.
+No AI, OCR, profile inference, or automatic profile writes are involved.
+
+Profile uses 2026–2030 graduation choices (Not specified saves null), fifteen
+Winter/Summer/Fall term choices with removable chips, and open-ended tags for
+roles, skills, and locations. Existing out-of-range years and legacy terms are
+preserved until the user edits them. Suggestions filter normalized saved/draft
+skills, enter only the draft, and persist only on Save. New uploads replace the
+suggestion set, preserving selected skills. Suggestion failures have a separate
+retry and never undo a successful PDF upload. See [frontend details](docs/frontend.md).
 
 Candidate Profile + Canonical Jobs → Deterministic Matching → Recommendations API
 is implemented. It uses string rules and explicit aliases: role **40**, detected
@@ -301,9 +351,11 @@ npm --prefix frontend test
 npm --prefix frontend run build
 ```
 
-With the built interface and backend running, `scripts/check_profile_ui.py` checks
-the profile in a browser. It restores original preferences afterward and appends
-one generated sample résumé to development upload history. See
+Prefer `scripts/check_recommendations_ui.py --browser-executable /path/to/chromium`
+for real UI/profile/PDF checks in a disposable schema with automatic server cleanup.
+`check_profile_ui.py` alone restores profile preferences but appends generated
+PDFs to that target database. `check_daily_email.py` verifies fixture ingestion,
+CLI dry run, and rendered email without contacting Resend. See
 [docs/frontend.md](docs/frontend.md#verification) for the exact command and checks.
 
 Tests cover source parsing, snapshot deduplication/ownership, per-source runs,
