@@ -5,8 +5,9 @@ import psycopg
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from internshipfeed.api import app
+from internshipfeed.api import app, connection
 from internshipfeed.models import CandidateProfileUpdate
+from pdf_fixtures import make_pdf
 
 
 EMPTY_PROFILE = {
@@ -62,3 +63,22 @@ class ApiFailureTests(unittest.TestCase):
         for response in responses:
             self.assertEqual(response.status_code, 503)
             self.assertNotIn("private PostgreSQL details", response.text)
+
+    def test_resume_unavailable_database_returns_503(self):
+        with patch('internshipfeed.api.db.connect', side_effect=psycopg.OperationalError('private database details')):
+            with TestClient(app) as client:
+                response = client.post('/api/resumes', files={'file': ('resume.pdf', make_pdf(['Sample Candidate']), 'application/pdf')})
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn('private database details', response.text)
+
+    def test_resume_insert_failure_does_not_log_document_or_database_details(self):
+        private_text = 'Private Candidate Resume Content'
+        with patch.dict(app.dependency_overrides, {connection: lambda: object()}), \
+             patch('internshipfeed.api.db.connect', side_effect=psycopg.OperationalError('offline')), \
+             patch('internshipfeed.api.db.development_profile', return_value={'id': 1}), \
+             patch('internshipfeed.api.db.save_resume_text', side_effect=psycopg.DataError(private_text)), TestClient(app) as client:
+            with self.assertLogs('internshipfeed.api', level='WARNING') as logs:
+                response = client.post('/api/resumes', files={'file': ('resume.pdf', make_pdf([private_text]), 'application/pdf')})
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(private_text, response.text)
+        self.assertNotIn(private_text, '\n'.join(logs.output))

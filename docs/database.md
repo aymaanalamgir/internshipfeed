@@ -252,8 +252,43 @@ exception details. No schema migration was needed for this API slice.
 
 `resumes` contains `id`, `candidate_profile_id`, `filename`, `extracted_text`, and
 `uploaded_at`. It stores text/metadata only: there is no raw binary column or
-permanent file path. Upload/extraction interfaces can be added later. Deleting a
-profile cascades to its résumé records and interactions.
+permanent file path. Deleting a profile cascades to its résumé records and interactions.
+
+`POST /api/resumes` implements résumé PDF upload → local `pdfplumber` text
+extraction → PostgreSQL persistence. It uses the existing database connection
+dependency, `development_profile()` lookup, and `save_resume_text()` insert. The
+caller cannot select a profile; every upload appends a new history row for the
+lowest-ID development profile. The profile itself remains unchanged. No migration
+was needed. There is no résumé retrieval/management endpoint in this slice.
+
+The multipart field is `file` (`UploadFile`). A successful request returns HTTP 201
+with a `Resume` response: `id`, `candidate_profile_id`, `filename`, `extracted_text`,
+and `uploaded_at`. Only the client filename's basename is retained, not directory
+components. No raw PDF bytes, base64 data, temporary paths, or inferred candidate
+data are persisted or sent to another service.
+
+Validation uses three checks: a case-insensitive `.pdf` filename, a compatible
+MIME type, and actual PDF parsing. `application/pdf`, unspecified MIME, and generic
+`application/octet-stream` are permitted; parsing is always required. Other
+extensions/MIME types receive HTTP 415. Files are limited to **5 MiB (5,242,880
+bytes)**, checked before extraction with a bounded read and the upload's reported
+size; larger files receive HTTP 413. FastAPI may spool multipart data to temporary
+disk before the endpoint runs; the handler limits its own memory read and parsing.
+
+`extract_pdf_text()` opens the document locally, enforces **10 pages** before
+extracting text, and reads pages in order. Pages returning `None` or blank text do
+not discard other pages. Cleanup normalizes CRLF/CR to LF, strips trailing spaces
+and outer whitespace, collapses runs of blank lines, and removes non-readable NUL
+characters (unsupported by PostgreSQL text). It preserves line order, indentation,
+case, and technical symbols. The API rejects corrupt/unreadable PDFs, excess
+pages, and effectively empty extraction with HTTP 422. Scanned/image-only PDFs
+are unsupported; no OCR, AI, skill extraction, or profile updates are performed.
+
+The PDF context and upload are closed on success and failure. Temporary upload
+files are not retained. Document contents and parser diagnostics are not logged;
+insert failures also use a generic HTTP 503 without logging PostgreSQL diagnostics
+that might contain rejected row text. Missing profiles return HTTP 503 without
+creating a candidate. Uploads follow the existing local-only mutation policy.
 
 `job_interactions` contains `id`, `candidate_profile_id`, `canonical_job_id`,
 `interaction_type`, and `created_at`. Allowed types are `view`, `click`, `save`,
@@ -261,7 +296,7 @@ profile cascades to its résumé records and interactions.
 records. There is no uniqueness constraint that overwrites interaction history.
 
 Repository helpers expose the development profile, append interaction events,
-and save extracted résumé text. Profile editing UI, résumé upload/extraction,
+and save extracted résumé text. Profile editing UI, résumé-to-profile suggestions,
 matching/recommendations, authentication, and interaction endpoints are future work.
 
 ## Constraints and indexes

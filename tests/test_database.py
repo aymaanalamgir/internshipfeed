@@ -19,6 +19,8 @@ from internshipfeed import db
 from internshipfeed.api import app, connection
 from internshipfeed.cli import main
 from internshipfeed.sources import CANADIAN
+from internshipfeed.resumes import MAX_PDF_PAGES, MAX_UPLOAD_BYTES
+from pdf_fixtures import make_pdf
 
 SOURCE_URL = CANADIAN.url
 from internshipfeed.models import JobKeywords
@@ -561,6 +563,95 @@ class DatabaseTests(unittest.TestCase):
             response = client.put('/api/profile', json=payload, headers={'Origin': 'https://evil.example'})
         self.assertEqual(response.status_code, 403)
         self.assertEqual(db.development_profile(self.conn), before)
+
+    def test_pdf_resume_upload_persists_text_metadata_and_preserves_profile(self):
+        before = db.development_profile(self.conn)
+        content = make_pdf(['Sample Candidate\nEducation', None, 'Projects\nPython / SQL / C++'])
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            response = client.post('/api/resumes', files={'file': ('resume.pdf', content, 'application/pdf')})
+        self.assertEqual(response.status_code, 201)
+        resume = response.json()
+        self.assertEqual(set(resume), {'id', 'candidate_profile_id', 'filename', 'extracted_text', 'uploaded_at'})
+        self.assertEqual(resume['candidate_profile_id'], before['id'])
+        self.assertEqual(resume['filename'], 'resume.pdf')
+        self.assertEqual(resume['extracted_text'], 'Sample Candidate\nEducation\n\nProjects\nPython / SQL / C++')
+        row = self.conn.execute('SELECT * FROM resumes WHERE id=%s', (resume['id'],)).fetchone()
+        self.assertEqual(set(row), set(resume))
+        self.assertEqual(row['extracted_text'], resume['extracted_text'])
+        self.assertEqual(row['candidate_profile_id'], before['id'])
+        self.assertEqual(row['uploaded_at'], datetime.fromisoformat(resume['uploaded_at'].replace('Z', '+00:00')))
+        self.assertEqual(db.development_profile(self.conn), before)
+
+    def test_resume_history_uppercase_extension_and_candidate_association(self):
+        profile = db.development_profile(self.conn)
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            first = client.post('/api/resumes', files={'file': ('resume_v1.pdf', make_pdf(['Version one']), 'application/pdf')})
+            second = client.post('/api/resumes', data={'candidate_profile_id': '999999'},
+                                 files={'file': ('RESUME.PDF', make_pdf(['Version two']), 'application/octet-stream')})
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertNotEqual(first.json()['id'], second.json()['id'])
+        rows = self.conn.execute('SELECT * FROM resumes ORDER BY id').fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row['candidate_profile_id'] for row in rows], [profile['id'], profile['id']])
+        self.assertEqual([row['extracted_text'] for row in rows], ['Version one', 'Version two'])
+        self.assertEqual([row['filename'] for row in rows], ['resume_v1.pdf', 'RESUME.PDF'])
+
+    def test_resume_rejects_other_extensions_and_incompatible_mime(self):
+        content = make_pdf(['Sample Candidate'])
+        cases = [('resume.' + extension, 'application/pdf') for extension in
+                 ('doc', 'docx', 'txt', 'png', 'jpg', 'jpeg', 'rtf', 'pages')]
+        cases.extend([('resume.pdf', 'text/plain'), ('resume.pdf', 'image/png')])
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for filename, mime in cases:
+                with self.subTest(filename=filename, mime=mime), patch('internshipfeed.api.extract_pdf_text') as extract:
+                    response = client.post('/api/resumes', files={'file': (filename, content, mime)})
+                    self.assertEqual(response.status_code, 415)
+                    extract.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM resumes').fetchone()['n'], 0)
+
+    def test_resume_rejects_corrupt_empty_and_too_many_pages_without_inserting(self):
+        cases = [(b'private content not a PDF', 'Could not read this PDF'),
+                 (b'%PDF-1.4\ncorrupt', 'Could not read this PDF'),
+                 (make_pdf([None]), 'Could not extract readable text'),
+                 (make_pdf(['page'] * (MAX_PDF_PAGES + 1)), 'at most 10 pages')]
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for content, message in cases:
+                with self.subTest(message=message):
+                    response = client.post('/api/resumes', files={'file': ('resume.pdf', content, 'application/pdf')})
+                    self.assertEqual(response.status_code, 422)
+                    self.assertIn(message, response.json()['detail'])
+                    self.assertNotIn('private content', response.text)
+                    self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM resumes').fetchone()['n'], 0)
+
+    def test_resume_size_limit_prevents_extraction_and_persistence(self):
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client, patch('internshipfeed.api.extract_pdf_text') as extract:
+            response = client.post('/api/resumes', files={'file': ('resume.pdf', b'x' * (MAX_UPLOAD_BYTES + 1), 'application/pdf')})
+        self.assertEqual(response.status_code, 413)
+        extract.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM resumes').fetchone()['n'], 0)
+
+    def test_resume_missing_file_profile_and_cross_origin_fail_without_insert(self):
+        content = make_pdf(['Sample Candidate'])
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual(client.post('/api/resumes').status_code, 422)
+            rejected = client.post('/api/resumes', files={'file': ('resume.pdf', content, 'application/pdf')},
+                                   headers={'Origin': 'https://evil.example'})
+            self.assertEqual(rejected.status_code, 403)
+            self.conn.execute('DELETE FROM candidate_profiles')
+            with patch('internshipfeed.api.extract_pdf_text') as extract:
+                missing = client.post('/api/resumes', files={'file': ('resume.pdf', content, 'application/pdf')})
+                self.assertEqual(missing.status_code, 503)
+                self.assertIn('Development profile is missing', missing.json()['detail'])
+                extract.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM resumes').fetchone()['n'], 0)
+
+    def test_resume_stores_only_basename_from_client_path(self):
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            response = client.post('/api/resumes', files={'file': ('/private/client/resume.Pdf', make_pdf(['Sample Candidate']), 'application/pdf')})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['filename'], 'resume.Pdf')
+        self.assertEqual(self.conn.execute('SELECT filename FROM resumes').fetchone()['filename'], 'resume.Pdf')
 
     def test_identical_snapshots_deduplicate_per_source(self):
         source = db.ensure_source(self.conn, self.job.source)

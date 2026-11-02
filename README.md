@@ -23,6 +23,8 @@ flowchart TD
     CP[(candidate_profiles)] --> E[(job_interactions)]
     C --> E
     CP --> RES[(resumes: extracted text and metadata)]
+    PDF[Resume PDF upload] --> EXTRACT[Local pdfplumber extraction]
+    EXTRACT --> RES
 ```
 
 The complete table structure, constraints, identity rules, indexes, migration,
@@ -143,6 +145,7 @@ remain local diagnostics/replay artifacts.
 
 - `GET /api/profile`: the seeded development candidate profile, including ID and timestamps.
 - `PUT /api/profile`: replace all five editable fields; return the normalized, persisted profile.
+- `POST /api/resumes`: upload one PDF in multipart field `file`; return HTTP 201 with metadata and extracted text.
 - `GET /api/sources`: configured datasets, including source IDs and enabled state.
 - `GET /api/jobs`: seven-field canonical jobs; optional `source_id` (dataset ID), `source` (repository URL), `status`, and `q` filters.
 - `GET /api/jobs/{id}`: a canonical job; merged IDs resolve to their survivor.
@@ -152,7 +155,7 @@ remain local diagnostics/replay artifacts.
 - `GET /api/ingestion-runs`, `GET /api/ingestion-runs/latest`, `GET /api/ingestion-runs/{uuid}`: per-source operational records; the list accepts `source_id`.
 - `GET /api/health`: database connectivity; `GET /docs`: API documentation.
 
-Sync and profile updates use the existing local-only mutation policy. Internet
+Sync, profile updates, and résumé uploads use the existing local-only mutation policy. Internet
 deployment needs an authenticated operator interface and durable background worker
 management.
 
@@ -176,8 +179,32 @@ curl -X PUT http://127.0.0.1:8000/api/profile \
 curl http://127.0.0.1:8000/api/profile
 ```
 
-Résumé/event tables and helpers remain storage foundations. Profile editing UI,
-résumé upload/extraction, recommendations/matching, and authentication are future work.
+Résumé PDF upload → local `pdfplumber` text extraction → PostgreSQL `resumes` is
+implemented. Uploads must have a `.pdf` extension (case-insensitive) and contain
+a parseable PDF. `application/pdf` is accepted; missing MIME types or generic
+`application/octet-stream` still require successful parsing. Other MIME types
+and file extensions receive HTTP 415.
+
+The file limit is **5 MiB (5,242,880 bytes)** and the page limit is **10 pages**.
+Oversized files receive HTTP 413 before extraction. Corrupt PDFs, too many pages,
+and PDFs without readable text receive HTTP 422. Scanned/image-only PDFs are
+unsupported: there is no OCR or AI. Page/line order and technical symbols are
+preserved, with normalized line endings and collapsed excess blank lines.
+
+```sh
+curl -X POST -F 'file=@/path/to/resume.pdf;type=application/pdf' \
+  http://127.0.0.1:8000/api/resumes
+```
+
+Every successful upload appends a record for the development profile, preserving
+earlier résumé versions. Only the basename, extracted text, candidate ID, and
+timestamp are stored; PDF bytes and temporary paths are not retained. Extraction
+does not modify the candidate profile or send its contents to external services.
+The response contains `id`, `candidate_profile_id`, `filename`, `extracted_text`,
+and `uploaded_at`. A résumé history endpoint and upload UI are not part of this slice.
+
+Interaction helpers remain storage foundations. Profile editing UI,
+résumé-to-profile suggestions, recommendations/matching, and authentication are future work.
 
 ## Tests
 
@@ -195,7 +222,8 @@ python scripts/test_with_postgres.py
 Tests cover source parsing, snapshot deduplication/ownership, per-source runs,
 raw versus normalized values, within-source identities, cross-source URL matching,
 canonical metadata, disabled sources, failure isolation, migration preservation,
-profile seeding, profile API validation/persistence/timestamps, résumé text,
+profile seeding, profile API validation/persistence/timestamps, résumé PDF uploads,
+local text extraction, format/size/page limits, résumé history and resource closure,
 event append semantics, and API/UI contracts. Database tests isolate both their
 schemas and advisory sync-lock keys from the running application.
 
@@ -204,6 +232,7 @@ schemas and advisory sync-lock keys from the running application.
 - `fetch.py`, `sources/`, `source.py`: transport, registry, and source parsers.
 - `records.py`, `normalize.py`, `models.py`: shared intermediate/domain contracts.
 - `enrich.py`: description and deterministic keyword extraction.
+- `resumes.py`: bounded local PDF text extraction and conservative cleanup.
 - `reconciliation.py`: URL matching, explainable mappings, canonical metadata refresh.
 - `db.py`, `migrations/`: PostgreSQL configuration, lineage, repositories, and schema.
 - `ingestion.py`, `sync.py`, `cli.py`: source runs, batch progress, background workflow.

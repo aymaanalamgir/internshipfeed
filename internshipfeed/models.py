@@ -36,6 +36,15 @@ class CandidateProfileUpdate(BaseModel):
         return list(dict.fromkeys(item.strip() for item in value if item.strip()))
 
 
+class Resume(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int = Field(gt=0)
+    candidate_profile_id: int = Field(gt=0)
+    filename: str
+    extracted_text: str
+    uploaded_at: datetime
+
+
 class JobKeywords(BaseModel):
     model_config = ConfigDict(extra="forbid")
     languages: List[str] = Field(default_factory=list)

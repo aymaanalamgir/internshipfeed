@@ -6,12 +6,13 @@ from uuid import UUID
 from typing import List, Literal, Optional
 
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails
+from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, Resume
+from .resumes import MAX_UPLOAD_BYTES, ResumeExtractionError, extract_pdf_text
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
 
@@ -125,6 +126,40 @@ def sync_jobs(request: Request):
     except (psycopg.Error, RuntimeError):
         logger.exception("Could not start sync")
         raise HTTPException(503, "Unable to start sync. Please try again later.")
+
+
+@app.post("/api/resumes", response_model=Resume, status_code=201)
+def upload_resume(request: Request, file: UploadFile = File(...), conn=Depends(connection)):
+    try:
+        local_mutation(request)
+        # Retain a filename, never a path supplied by a client on either platform.
+        filename = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+        if not filename.lower().endswith(".pdf") or "\x00" in filename:
+            raise HTTPException(415, "Only .pdf resumes are supported.")
+        mime = (file.content_type or "").split(";", 1)[0].strip().lower()
+        if mime not in {"application/pdf", "application/octet-stream", ""}:
+            raise HTTPException(415, "Upload a PDF with content type application/pdf.")
+        if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "PDF must be 5 MiB or smaller.")
+        # UploadFile spools larger files; this read also bounds memory when size is absent.
+        content = file.file.read(MAX_UPLOAD_BYTES + 1)
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "PDF must be 5 MiB or smaller.")
+        candidate = db.development_profile(conn)
+        if candidate is None:
+            raise HTTPException(503, "Development profile is missing. Initialize the database before using resumes.")
+        try:
+            text = extract_pdf_text(content)
+        except ResumeExtractionError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return db.save_resume_text(conn, candidate["id"], filename, text)
+        except psycopg.Error:
+            # PostgreSQL diagnostics may include rejected row text. Do not log them.
+            logger.warning("Resume storage request failed")
+            raise HTTPException(503, "Resume storage is unavailable. Please try again later.") from None
+    finally:
+        file.file.close()
 
 
 @app.get("/api/ingestion-batches/{run_id}")
