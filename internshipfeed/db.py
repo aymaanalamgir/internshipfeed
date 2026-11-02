@@ -364,27 +364,57 @@ def record_interaction(conn, profile_id, canonical_id, interaction_type):
     return conn.execute('INSERT INTO job_interactions (candidate_profile_id, canonical_job_id, interaction_type) VALUES (%s,%s,%s) RETURNING *', (profile_id, canonical_id, interaction_type)).fetchone()
 
 
-def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
-    # Resolve historical IDs without rewriting events when reconciliation merges jobs.
-    return conn.execute("""WITH RECURSIVE lineage AS (
+INTERACTION_LINEAGE = """WITH RECURSIVE lineage AS (
         SELECT DISTINCT i.id AS original_id, i.id AS job_id, i.merged_into_id
         FROM canonical_job_identities i JOIN job_interactions e ON e.canonical_job_id=i.id
         WHERE e.candidate_profile_id=%s
         UNION ALL
         SELECT l.original_id, i.id, i.merged_into_id
         FROM lineage l JOIN canonical_job_identities i ON i.id=l.merged_into_id
-    )
-    SELECT l.job_id,
-           bool_or(e.interaction_type='save') AS saved,
-           bool_or(e.interaction_type='dismiss') AS dismissed,
-           bool_or(e.interaction_type='applied') AS applied,
-           max(e.created_at) AS last_interaction_at,
-           max(e.created_at) FILTER (WHERE e.interaction_type='save') AS saved_at,
-           max(e.created_at) FILTER (WHERE e.interaction_type='applied') AS applied_at,
-           max(e.id) AS last_event_id
+    ) """
+
+
+RESOLVED_INTERACTIONS = INTERACTION_LINEAGE + """, events AS (
+    SELECT l.job_id, e.id, e.interaction_type, e.created_at
     FROM job_interactions e JOIN lineage l ON l.original_id=e.canonical_job_id
     WHERE e.candidate_profile_id=%s AND l.merged_into_id IS NULL
-    GROUP BY l.job_id ORDER BY l.job_id""", (profile_id, profile_id)).fetchall()
+), latest_signals AS (
+    SELECT DISTINCT ON (job_id, signal) * FROM (
+        SELECT *, CASE interaction_type WHEN 'unsave' THEN 'save'
+                      WHEN 'unapplied' THEN 'applied' ELSE interaction_type END AS signal
+        FROM events
+    ) typed ORDER BY job_id, signal, id DESC
+) """
+
+
+def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
+    # Latest explicit action per family wins, including across merged identities.
+    # Event IDs order writes; timestamps can tie or precede a waiting transaction.
+    return conn.execute(RESOLVED_INTERACTIONS + """SELECT s.job_id,
+           bool_or(s.interaction_type='save') AS saved,
+           bool_or(s.interaction_type='dismiss') AS dismissed,
+           bool_or(s.interaction_type='applied') AS applied,
+           h.last_interaction_at,
+           max(s.created_at) FILTER (WHERE s.interaction_type='save') AS saved_at,
+           max(s.created_at) FILTER (WHERE s.interaction_type='applied') AS applied_at,
+           h.last_event_id
+    FROM latest_signals s JOIN (
+        SELECT job_id, max(created_at) AS last_interaction_at, max(id) AS last_event_id
+        FROM events GROUP BY job_id
+    ) h ON h.job_id=s.job_id
+    GROUP BY s.job_id, h.last_interaction_at, h.last_event_id ORDER BY s.job_id""", (profile_id, profile_id)).fetchall()
+
+
+def behavior_history(conn, profile_id):
+    """Bulk-load active weighted signals; inverse events cancel save/apply evidence."""
+    from .behavioral import BehaviorEvidence, INTERACTION_WEIGHTS
+    rows = conn.execute(RESOLVED_INTERACTIONS + """SELECT job_id,
+        array_agg(interaction_type ORDER BY interaction_type) AS interaction_types
+        FROM latest_signals WHERE interaction_type=ANY(%s)
+        GROUP BY job_id ORDER BY job_id""", (profile_id, profile_id, list(INTERACTION_WEIGHTS))).fetchall()
+    actions = {row['job_id']: frozenset(row['interaction_types']) for row in rows}
+    details = list_job_details(conn, job_ids=list(actions), include_inactive=True, include_unlinked=True)
+    return [BehaviorEvidence(item, actions[item.job.id]) for item in details]
 
 
 def record_interaction_with_state(conn, profile_id, canonical_id, interaction_type):
@@ -398,6 +428,10 @@ def record_interaction_with_state(conn, profile_id, canonical_id, interaction_ty
 
 def save_resume_text(conn, profile_id, filename, extracted_text):
     return conn.execute('INSERT INTO resumes (candidate_profile_id, filename, extracted_text) VALUES (%s,%s,%s) RETURNING *', (profile_id, filename, extracted_text)).fetchone()
+
+
+def latest_resume_metadata(conn, profile_id):
+    return conn.execute('SELECT id, candidate_profile_id, filename, uploaded_at FROM resumes WHERE candidate_profile_id=%s ORDER BY uploaded_at DESC, id DESC LIMIT 1', (profile_id,)).fetchone()
 
 
 def main():

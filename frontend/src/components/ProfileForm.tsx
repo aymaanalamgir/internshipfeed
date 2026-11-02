@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import type { CandidateProfile, TagField } from '../types/profile';
 import { updateProfile } from '../api/profile';
 import { buildProfilePayload, emptyPending, graduationYearError, toDraft } from '../lib/form';
@@ -12,7 +12,7 @@ const FIELDS: { key: TagField; label: string; placeholder: string }[] = [
   { key: 'preferred_terms', label: 'Preferred terms', placeholder: 'Add a term…' },
 ];
 
-export function ProfileForm({ profile }: { profile: CandidateProfile }) {
+export function ProfileForm({ profile, onSaved, children }: { profile: CandidateProfile; onSaved?: () => void; children?: ReactNode }) {
   const [baseline, setBaseline] = useState(profile);
   const [draft, setDraft] = useState(() => toDraft(profile));
   const [pending, setPending] = useState(emptyPending);
@@ -39,6 +39,7 @@ export function ProfileForm({ profile }: { profile: CandidateProfile }) {
       setDraft(toDraft(stored));
       setPending(emptyPending());
       setSaved(true);
+      onSaved?.();
     } catch {
       setError('Could not save changes. Please try again.');
     } finally { setSaving(false); }
@@ -47,7 +48,6 @@ export function ProfileForm({ profile }: { profile: CandidateProfile }) {
   return (
     <form onSubmit={submit} noValidate aria-label="Candidate profile" aria-busy={saving}>
       <div className="form-intro">
-        <span className="section-label">Your preferences</span>
         <span id="tag-instructions">Type a value, then press Enter.</span>
       </div>
       <fieldset disabled={saving} className="profile-fields">
@@ -68,6 +68,7 @@ export function ProfileForm({ profile }: { profile: CandidateProfile }) {
           {yearError && <p className="field-error" id="year-error" role="alert">{yearError}</p>}
         </div>
       </fieldset>
+      {children}
       <div className="form-actions">
         <div className="save-message" aria-live="polite">
           {error ? <span className="field-error" role="alert">{error}</span>
@@ -75,7 +76,7 @@ export function ProfileForm({ profile }: { profile: CandidateProfile }) {
               : dirty ? <span>Unsaved changes</span> : <span>Up to date</span>}
         </div>
         <button className="button button-primary" type="submit" disabled={saving || !dirty}>
-          {saving ? 'Saving…' : 'Save profile'}<span aria-hidden="true">↗</span>
+          {saving ? 'Saving…' : 'Save changes'}
         </button>
       </div>
     </form>

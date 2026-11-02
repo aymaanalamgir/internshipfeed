@@ -22,9 +22,13 @@ flowchart TD
     PROFILE --> CP[(candidate_profiles)]
     CP --> MATCH[Deterministic matching]
     C --> MATCH
-    MATCH --> RECS[Recommendations API]
+    MATCH --> RANK[75% profile + 25% behavior]
+    RANK --> RECS[Recommendations API]
     RECS --> CARDS[React recommendation cards]
     CARDS --> E[(job_interactions)]
+    E --> BEHAVIOR[Bounded metadata preferences]
+    C --> BEHAVIOR
+    BEHAVIOR --> RANK
     E --> STATE[SQL-derived candidate state]
     STATE --> VIEWS[Recommended / Saved / Applied]
     CP[(candidate_profiles)] --> E[(job_interactions)]
@@ -93,16 +97,17 @@ python -m internshipfeed.db
 python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
 
-The existing jobs feed remains at `/` and `/feed`. The React + TypeScript profile
-screen is at **http://127.0.0.1:8000/profile**. Recommended jobs and actions are at
-**http://127.0.0.1:8000/recommendations**. The profile edits preferences and uploads
-PDFs through the backend APIs. Build output is ignored by Git; rebuild
+Open **http://127.0.0.1:8000/** for Recommended. All listings is at `/listings`,
+with Saved and Applied in the same compact navigation. Profile opens in a drawer;
+click a job title for details without leaving the feed. The legacy `/feed` alias
+opens All listings, and `/profile` opens the Profile drawer over Recommended.
+Profile edits and PDF uploads use the backend APIs. Build output is ignored by Git; rebuild
 after frontend changes. [Frontend setup and architecture](docs/frontend.md)
 includes the optional Vite development workflow.
 Saved jobs are at `/saved`, and application history is at `/applied`. Restart
 FastAPI after updating backend routes.
 
-Open **http://localhost:8000** and click **Sync & enrich** to run both enabled
+Open **http://localhost:8000/listings** and click **Update listings** to run both enabled
 sources. The background workflow fetches, snapshots, parses, normalizes, optionally
 reads descriptions, reconciles URLs, and persists metadata. Progress includes both
 overall batch counts and per-source execution counts.
@@ -166,10 +171,11 @@ remain local diagnostics/replay artifacts.
 - `GET /api/profile`: the seeded development candidate profile, including ID and timestamps.
 - `PUT /api/profile`: replace all five editable fields; return the normalized, persisted profile.
 - `POST /api/resumes`: upload one PDF in multipart field `file`; return HTTP 201 with metadata and extracted text.
-- `GET /api/recommendations`: visible, nondismissed, unapplied jobs with unchanged fit scores and SQL-derived `interaction_state`; optional `min_score=0..100` (default 0).
+- `GET /api/resumes/latest`: latest development-candidate filename/date metadata, or null; excludes extracted text.
+- `GET /api/recommendations`: eligible jobs ordered by deterministic profile + behavior ranking; unchanged `score`/components, added `profile_score`, `behavior_score`, `final_score`, `behavior_reasons`, and SQL-derived `interaction_state`. Optional `min_score=0..100` still filters profile fit.
 - `GET /api/saved`: saved, nondismissed jobs, including applied jobs; newest save first.
 - `GET /api/applied`: application history, newest applied event first, including closed/dismissed jobs.
-- `POST /api/jobs/{id}/interactions`: append a `click`, `save`, `dismiss`, or `applied` event for the development profile; merged IDs resolve to their surviving canonical job.
+- `POST /api/jobs/{id}/interactions`: append `click`, `save`, `unsave`, `dismiss`, `applied`, or `unapplied` for the development profile; merged IDs resolve to their surviving canonical job.
 - `GET /api/interactions`: effective flags, latest interaction/save/application timestamps, and event cursor, grouped by current canonical job.
 - `GET /api/sources`: configured datasets, including source IDs and enabled state.
 - `GET /api/jobs`: seven-field canonical jobs; optional `source_id` (dataset ID), `source` (repository URL), `status`, and `q` filters.
@@ -232,22 +238,27 @@ Candidate Profile + Canonical Jobs → Deterministic Matching → Recommendation
 is implemented. It uses string rules and explicit aliases: role **40**, detected
 job-skill overlap **30**, location **20**, and term **10** points. Every awarded
 component includes its matching evidence. Active alternate source titles,
-locations, and terms supplement the representative canonical fields. Equal scores
-sort by newer exact posting date (missing dates last), then descending canonical ID.
+locations, and terms supplement the representative canonical fields.
 
 Scores are calculated on each request and are not stored. Empty preferences or
-missing metadata earn zero in that dimension. There is no AI, résumé-text ranking,
-interaction-based ranking, or automatic profile mutation. The existing feed/UI
-continues to use its normal ordering. Exact rules, rounding, mappings, and examples
-are documented in **[docs/matching.md](docs/matching.md)**.
+missing metadata earn zero in that dimension. Recommended also derives bounded
+metadata preferences from click (+1), save (+2), applied (+4), and dismiss (−3),
+once per event type/current canonical job. Role, skills, company, location, and
+term affinity produces behavior 0–100, neutral 50. Final rank is 75% profile +
+25% behavior, rounded half up. The existing `score` remains profile fit; the UI
+discloses both signals. Ranking updates on Recommended navigation/refresh.
+The generic feed retains chronological/search ordering. There is no AI,
+résumé-text ranking, stored behavior profile, or automatic profile mutation.
+Exact profile rules are in **[docs/matching.md](docs/matching.md)**; weights,
+normalization, and ranking rules are in **[docs/behavioral.md](docs/behavioral.md)**.
 
 ```sh
 curl 'http://127.0.0.1:8000/api/recommendations?min_score=20'
 ```
 
-The profile UI supports tag editing, explicit saves, inline feedback, and PDF
-uploads. Uploaded filenames are shown for the current browser session; there is
-no résumé-history API. Uploads do not change the form or candidate preferences.
+The Profile drawer supports shared skill tags, explicit saves, inline feedback,
+and compact PDF upload/replace. Latest filename/date metadata restores on reopen
+and refresh. Uploads do not change the form or candidate preferences.
 The Recommended and Saved screens offer **Apply → Save → Applied → Dismiss**. Apply opens
 the external application in a new tab and attempts to record a click; a recording
 failure never blocks navigation or implies an application was completed. Save
@@ -258,10 +269,14 @@ the application date and an Open application link. State returns after refresh. 
 disclosure exposes the unchanged matching breakdown and reasons.
 
 Interaction history is append-only. Effective flags and timestamps are derived in
-SQL and follow canonical merge redirects; scores never use interaction state.
+SQL and follow canonical merge redirects. Profile scores never use interaction
+state; Recommended uses separate bounded behavioral evidence for ordering.
 Collections and action receipts carry server-derived state, which React consumes
-without replaying events. Save and
-Applied are one-directional in this slice, and there is no undo for Dismiss.
+without replaying events. Click Saved again to unsave, or Applied again to unmark
+it. The latest action in each pair wins, survives refresh, and cancels the
+corresponding preference signal. Dismiss remains one-way. Migration
+`008_reversible_interactions.sql` extends the allowed event types without changing
+historical rows or adding state columns.
 See [docs/interactions.md](docs/interactions.md) for contracts and exact semantics.
 Dismissed/applied jobs are also excluded from normal `/api/jobs` and `/api/feed`
 discovery; the underlying canonical records remain stored. Saved/Applied history
@@ -301,6 +316,10 @@ schemas and advisory sync-lock keys from the running application.
 Matching tests cover explicit role/skill aliases, technical-token boundaries,
 Canadian/remote geography, season/year pairing, explanations, exact totals,
 visibility, stable tie-breaking, and ranking changes after profile updates.
+Behavior tests cover bounded affinities, capped repeated signals, mixed events,
+metadata contributions, exact 75/25 composition, neutral ordering, canonical
+merges, candidate isolation, and unchanged profile fit. Frontend checks cover
+final-score display, preserved server ordering, and separate history-view scores.
 `scripts/check_recommendations_ui.py` runs the action workflow plus the profile
 and feed browser checks against an isolated PostgreSQL schema and removes its
 temporary server/schema afterward. It leaves live candidate history untouched.
@@ -311,9 +330,12 @@ temporary server/schema afterward. It leaves live candidate history untouched.
 - `records.py`, `normalize.py`, `models.py`: shared intermediate/domain contracts.
 - `enrich.py`: description and deterministic keyword extraction.
 - `resumes.py`: bounded local PDF text extraction and conservative cleanup.
-- `matching.py`: pure deterministic scoring, explanations, and recommendation ordering.
+- `matching.py`: unchanged profile scoring, explanations, shared normalization, and profile ordering.
+- `behavioral.py`: ephemeral interaction affinities and bounded preference scoring.
+- `recommendations.py`: independent score composition and personalized ordering.
 - `reconciliation.py`: URL matching, explainable mappings, canonical metadata refresh.
 - `db.py`, `migrations/`: PostgreSQL configuration, lineage, repositories, and schema.
 - `ingestion.py`, `sync.py`, `cli.py`: source runs, batch progress, background workflow.
-- `api.py`, `web/`: database-backed API and UI.
-- `frontend/`: React + TypeScript profile/recommendation UIs, Vite build, and self-hosted fonts.
+- `api.py`: database-backed API and shared React page serving.
+- `frontend/`: unified React + TypeScript product, shared drawers/tags/actions, Vite build, and self-hosted fonts.
+- `index.html`, `web/app.js`: compatibility redirects for cached older pages.

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { addTag, removeTag } from '../lib/form';
+import { SkillTag } from './SkillTag';
 
 interface Props {
   id: string;
@@ -33,13 +34,9 @@ export function TagInput({ id, label, placeholder, values, input, onChange, onIn
         {values.length > 0 && (
           <ul className="tag-list" aria-label={`${label} values`}>
             {values.map((value, index) => (
-              <li className="tag" key={value}>
-                <span>{value}</span>
-                <button type="button" disabled={disabled} aria-label={`Remove ${value} from ${label.toLowerCase()}`}
-                  onClick={() => { onChange(removeTag(values, index)); setAnnouncement(`${value} removed.`); }}>
-                  <span aria-hidden="true">×</span>
-                </button>
-              </li>
+              <li className="tag" key={value}><SkillTag label={value} disabled={disabled}
+                removeLabel={`Remove ${value} from ${label.toLowerCase()}`}
+                onRemove={() => { onChange(removeTag(values, index)); setAnnouncement(`${value} removed.`); }} /></li>
             ))}
           </ul>
         )}

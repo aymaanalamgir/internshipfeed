@@ -1,0 +1,22 @@
+:root {
+  --bg: #f6f4ef;
+  --surface: #fffefa;
+  --surface-muted: #f0eee7;
+  --text: #252522;
+  --text-muted: #6c6a63;
+  --border: #dedbd3;
+  --border-strong: #bcb8ae;
+  --accent: #a44c30;
+  --accent-soft: #f4eae3;
+  --danger-muted: #993d31;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --radius: 3px;
+  --font-body: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-technical: 'SFMono-Regular', Consolas, monospace;
+}

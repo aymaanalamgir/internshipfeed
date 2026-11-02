@@ -95,8 +95,13 @@ def normalize_skill(value: str) -> str:
     return SKILL_ALIASES.get(key, key)
 
 
-def score_skills(skills: Iterable[str], keywords: JobKeywords) -> Tuple[int, List[str], Optional[str]]:
-    candidate = {normalize_skill(skill) for skill in skills if normalize_skill(skill)}
+def role_families(titles: Iterable[str]) -> Set[str]:
+    """Shared taxonomy for profile matching and behavioral metadata."""
+    return {family for title in titles for family in _role_families(normalize_text(title))}
+
+
+def technical_skills(keywords: JobKeywords) -> dict:
+    """Normalized technical keywords only; requirements prose is not evidence."""
     values = keywords.languages + keywords.frameworks + keywords.tools_and_platforms
     values += [value for value in keywords.concepts if normalize_skill(value) in TECHNICAL_CONCEPTS]
     job_skills = {}
@@ -104,6 +109,12 @@ def score_skills(skills: Iterable[str], keywords: JobKeywords) -> Tuple[int, Lis
         key = normalize_skill(value)
         if key:
             job_skills.setdefault(key, SKILL_LABELS.get(key, value.strip()))
+    return job_skills
+
+
+def score_skills(skills: Iterable[str], keywords: JobKeywords) -> Tuple[int, List[str], Optional[str]]:
+    candidate = {normalize_skill(skill) for skill in skills if normalize_skill(skill)}
+    job_skills = technical_skills(keywords)
     matched = [label for key, label in sorted(job_skills.items()) if key in candidate]
     if not matched:
         return 0, [], None
@@ -172,6 +183,13 @@ def score_location(preferences: Iterable[str], locations: Iterable[str]) -> Tupl
     return best, reason
 
 
+def location_keys(locations: Iterable[str]) -> Set[str]:
+    """Explicit normalized locations, without new geographic inference."""
+    unknown = {'', 'unknown', 'not specified', 'multiple locations', 'various', 'tbd', 'n a', 'anywhere'}
+    return {_geography(option)[0] for location in locations for option in re.split(r'[;\n|]+', location)
+            if normalize_text(option) not in unknown and _geography(option)[0]}
+
+
 TERM_PATTERN = re.compile(
     r'\b(?P<year_first>(?:19|20|21|22)\d{2})\s+(?P<season_after>summer|winter|fall|autumn|spring)\b'
     r'|\b(?P<season>summer|winter|fall|autumn|spring)\b(?:\s+(?P<year>(?:19|20|21|22)\d{2})\b)?'
@@ -186,6 +204,11 @@ def _terms(value: str) -> List[Tuple[Optional[str], Optional[str]]]:
         result.append(('fall' if season == 'autumn' else season,
                        match['year_first'] or match['year'] or match['year_only']))
     return result
+
+
+def term_keys(terms: Iterable[str]) -> Set[str]:
+    """Behavior uses complete season/year evidence, never posting dates."""
+    return {season + ' ' + year for value in terms for season, year in _terms(value) if season and year}
 
 
 def score_term(preferences: Iterable[str], terms: Iterable[str]) -> Tuple[int, Optional[str]]:

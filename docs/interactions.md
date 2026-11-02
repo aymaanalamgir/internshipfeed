@@ -24,8 +24,11 @@ flowchart TD
     A2 --> C
 ```
 
-There is no interaction-weighted ranking, new database table, boolean field on
-canonical jobs, authentication, or enum migration. The existing five-event table
+Separate deterministic [behavioral ranking](behavioral.md) now derives preference
+evidence from this same history. Profile scores and the workflow rules below
+remain unchanged. There is no new database table, boolean field on
+canonical jobs or authentication. Migration `008_reversible_interactions.sql`
+extends the existing text check constraint to seven event types; the table
 remains append-only. `view` stays available to internal helpers but is not exposed
 by the public action endpoint.
 
@@ -39,7 +42,7 @@ by the public action endpoint.
 {"type": "save"}
 ```
 
-Allowed types are `click`, `save`, `dismiss`, and `applied`. Extra fields, including
+Allowed types are `click`, `save`, `unsave`, `dismiss`, `applied`, and `unapplied`. Extra fields, including
 `candidate_profile_id`, are rejected with HTTP 422. The endpoint always selects
 the seeded development profile using the existing lowest-ID convention and the
 existing connection dependency/local-write guard. Merged job IDs resolve through
@@ -70,8 +73,9 @@ HTTP 201 returns the inserted event and authoritative state snapshot:
 ```
 
 Repeated successful requests append separate events. There is no idempotency key
-or deduplication constraint on event history. The UI disables completed one-way
-actions, while callers can still append repeats intentionally. Missing development
+or deduplication constraint on event history. Active Save/Applied controls remain
+enabled and append explicit inverse events when clicked again. Only pending
+actions are disabled; callers can append repeated state setters. Missing development
 profiles and unavailable storage return sanitized HTTP 503 responses. Cross-origin
 or nonlocal writes follow the existing HTTP 403 policy.
 
@@ -102,14 +106,15 @@ canonical job, ordered by ID.
 
 `GET /api/recommendations`, `GET /api/saved`, and `GET /api/applied` each return
 complete scored cards with `interaction_state` attached. They reuse the same
-profile lookup, SQL projection, canonical details, and pure matcher. The existing
+profile lookup, SQL projection, canonical details, and pure profile matcher.
+Recommended additionally composes independent behavioral preference scores. The existing
 seven-field canonical job stays nested in `job`; existing component-score,
 matched-skill, and reason fields are unchanged. Recommended alone accepts the
 existing `min_score=0..100` filter.
 
 | View | Membership | Order |
 | --- | --- | --- |
-| Recommended | Active/visible, not dismissed, not applied. Saved alone remains eligible. | Fit score, exact posting date, then ID descending. |
+| Recommended | Active/visible, not dismissed, not applied. Saved alone remains eligible. | Final rank, profile fit, exact posting date, then ID descending. |
 | Saved | Saved and not dismissed, including applied jobs. | Latest save time, then ID descending. |
 | Applied | Applied, including saved, dismissed, closed, or unavailable jobs. | Latest applied time, then ID descending. |
 
@@ -123,28 +128,35 @@ Saved and Applied retain inactive canonical records and jobs whose source
 observations have moved to a corrected URL. Closed jobs are labelled accordingly;
 missing application links cannot be opened. No jobs or historical events are
 deleted to implement these views. Match scores are recomputed against the current
-profile/available metadata even for history; interaction flags never earn points.
+profile/available metadata even for history; interaction flags never earn profile
+points. Recommended's additional behavioral signal refines ordering without
+changing workflow eligibility.
 
 ## State semantics
 
 | Event | Effective state / behavior |
 | --- | --- |
 | `save` | Saved becomes true; appears in Saved and remains in discovery unless applied/dismissed. |
+| `unsave` | Saved becomes false, `saved_at` clears, and the job leaves Saved. Applied remains independent. |
 | `dismiss` | Dismissed becomes true; hidden from Recommended, normal feed, and Saved after confirmation and refresh. |
 | `applied` | Applied becomes true; leaves discovery and appears in Applied; may remain in Saved. |
-| `click` | Records opening the application; it does not imply Applied, Saved, or Dismissed. |
+| `unapplied` | Applied becomes false, `applied_at` clears, and the job leaves Applied. Active nondismissed jobs return to discovery. |
+| `click` | Records opening the application; no workflow flag changes. Supplies a capped +1 preference signal. |
 | `view` | Internal historical event; affects only the latest interaction time. |
 
-Flags are independent and monotonic. Save → applied → click keeps Saved and
-Applied true. Dismiss takes precedence in discovery and Saved; Applied history
-remains available even when dismissed. There is no unsave, undismiss, or applied reset in this slice, and no
-events are deleted to simulate toggles.
+Flags are independent. The newest Save/Unsave and Applied/Unapplied action wins
+for its own flag; Dismiss remains one-way. Save → Applied → Unsave keeps Applied
+true; Save → Applied → Unapplied keeps Saved true. Dismiss takes precedence in
+discovery and Saved, so reversing another flag never undismisses a job. History
+is retained in full, including repeated activations and reversals.
 
 `interaction_states()` starts from candidate-scoped historical job IDs, follows
 `canonical_job_identities.merged_into_id` recursively, and groups events by the
-surviving ID. `bool_or` computes each flag, `max(created_at)` gives the last
-interaction, and `max(created_at) FILTER (WHERE interaction_type = 'applied')`
-gives the latest application time. The corresponding save filter gives `saved_at`.
+surviving ID. `RESOLVED_INTERACTIONS` uses `DISTINCT ON (job_id, signal)` ordered
+by event ID descending to pick the latest state-setting action per family, even
+across merged aliases. Event IDs resolve equal/out-of-order timestamps. Active
+Save/Applied events supply their own timestamps; undo clears the respective date.
+`max(created_at)` over all events gives the last interaction time.
 Later clicks/views do not reorder Applied. `max(id)` is a derived snapshot cursor
 (`last_event_id`), which lets React reject older responses without replaying events.
 Multiple events and multi-hop
@@ -159,7 +171,7 @@ still the only persistent state model.
 `record_interaction_with_state()` wraps the existing insert and SQL projection in
 a transaction with the existing reconciliation advisory lock, so a merge cannot
 change canonical identity between insertion and receipt. This adds no new table,
-column, or migration.
+column. The new migration changes only the allowed event types.
 
 The existing PostgreSQL indexes were inspected and retained:
 
@@ -173,16 +185,19 @@ at the current scale; there is no cache or mutable candidate-job state table.
 ## UI and Apply behavior
 
 `/recommendations`, `/saved`, and `/applied` reuse `JobCollectionPage` and the same
-card. Each screen loads one server collection containing effective state. Failures
+card. All listings uses compact React rows with the same actions/tags/details
+drawer. Each scored screen loads one server collection containing effective state. Failures
 show a retry state instead of a partial list. Navigation/reload reconstructs the
 screen from PostgreSQL. The page preserves server ordering and progressively renders
-batches of 24 cards. The wordmark links back to the normal feed.
+batches of 24 cards. The wordmark links to Recommended home. Profile opens as a
+drawer, keeping the current collection visible.
 
 Each card uses job information first, expandable match evidence second, and
 actions last. Apply is leftmost and strongest, followed by bookmark Save, clock
 Applied, and a quiet × Dismiss. Icon controls have accessible labels and focus
 styles. The displayed score is out of 100, not a success probability; expanding
-it reveals the existing component scores and reason strings.
+it reveals profile components/reasons and, in Recommended, the independent
+Profile/Preference/Final signals and concise behavioral reasons.
 
 Apply is a native absolute HTTP(S) anchor with a new tab and
 `rel="noopener noreferrer"`. The click callback starts a POST without awaiting it
@@ -204,7 +219,9 @@ Matching weights, the seven-field canonical contract, source ingestion, profile
 editing, and résumé extraction remain unchanged. This slice intentionally changes
 server-side discovery membership: applied/dismissed jobs are excluded instead of
 being returned and hidden only by React. Included jobs have the same fit scores
-as before. Saved/Applied are query-backed views rather than new persistence models.
+as before. Recommended now has separate behavioral/final scores; eligibility is
+applied before ranking, so high preference scores cannot restore excluded jobs.
+Saved/Applied are query-backed views rather than new persistence models.
 
 ## Verification
 
@@ -219,7 +236,7 @@ Backend tests cover all action types, repeated history, independent flags, lates
 time, invalid payloads, nonexistent/orphan IDs, missing profile/storage, local
 write policy, candidate isolation, multi-hop merge projection, all collection
 combinations, fresh-session persistence, closed/unlinked history, applied ordering
-despite later clicks, and unchanged scores/canonical metadata. Existing view/resume helper tests remain intact.
+despite later clicks, and unchanged profile scores/canonical metadata. Existing view/resume helper tests remain intact.
 
 Frontend helper tests cover server snapshots, three-view membership, combined
 flags, merged response IDs, out-of-order event cursors, closed-history visibility,

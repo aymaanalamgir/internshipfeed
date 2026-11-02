@@ -1,6 +1,8 @@
 import type { ResumeMetadata } from '../types/profile';
 import { requestJson } from './http';
 
+export const getLatestResume = (signal?: AbortSignal) => requestJson<ResumeMetadata | null>('/api/resumes/latest', { signal });
+
 export async function uploadResume(file: File): Promise<ResumeMetadata> {
   const body = new FormData();
   body.append('file', file);

@@ -1,7 +1,7 @@
-import type { CandidateJob } from '../types/jobs';
+import type { CandidateJob, RankedRecommendation } from '../types/jobs';
 import { requestJson } from './http';
 
-export function getRecommendations(signal?: AbortSignal): Promise<CandidateJob[]> {
+export function getRecommendations(signal?: AbortSignal): Promise<RankedRecommendation[]> {
   return requestJson('/api/recommendations', { signal });
 }
 

@@ -1,91 +1,43 @@
-import { useEffect, useRef, useState } from 'react';
-import { recordInteraction } from '../api/interactions';
+import { useEffect, useState } from 'react';
 import { getAppliedJobs, getRecommendations, getSavedJobs } from '../api/recommendations';
 import { RecommendationCard } from '../components/RecommendationCard';
-import { confirmInteraction, emptyInteraction, indexInteractions, visibleJobs } from '../lib/workflow';
-import type { CandidateJob, InteractionStates, InteractionType, JobView } from '../types/jobs';
+import { emptyInteraction, visibleJobs } from '../lib/workflow';
+import type { CandidateJob, JobView } from '../types/jobs';
+import type { JobWorkflow } from '../hooks/useJobActions';
 
 const LOADERS = { recommended: getRecommendations, saved: getSavedJobs, applied: getAppliedJobs };
 const TITLES = { recommended: 'Recommended', saved: 'Saved', applied: 'Applied' };
-const EMPTY = { recommended: 'No new recommendations. Saved and applied jobs are available in their own views.',
-  saved: 'No saved jobs yet.', applied: 'No applications recorded yet.' };
+const EMPTY = { recommended: 'No new recommendations.', saved: 'No saved jobs yet.', applied: 'No applications yet.' };
 
-export function JobCollectionPage({ view }: { view: JobView }) {
-  const [recommendations, setRecommendations] = useState<CandidateJob[]>([]);
-  const [states, setStates] = useState<InteractionStates>({});
+export function JobCollectionPage({ view, workflow, revision, onOpenJob, onOpenProfile }: {
+  view: JobView; workflow: JobWorkflow; revision: number; onOpenJob: (id: number) => void; onOpenProfile: () => void;
+}) {
+  const [jobs, setJobs] = useState<CandidateJob[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
+  const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [pending, setPending] = useState<Record<number, InteractionType | undefined>>({});
-  const [errors, setErrors] = useState<Record<number, string>>({});
-  const [announcement, setAnnouncement] = useState('');
   const [limit, setLimit] = useState(24);
-  const busy = useRef(new Set<number>());
-
+  const { install } = workflow;
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setLoadError(false);
-    // Collections arrive with their SQL-derived product state in one response.
-    LOADERS[view](controller.signal)
-      .then(jobs => {
-        if (!controller.signal.aborted) { setRecommendations(jobs); setStates(indexInteractions(jobs.map(job => job.interaction_state))); }
-      })
-      .catch(() => { if (!controller.signal.aborted) setLoadError(true); })
+    setLoading(true); setError(false);
+    LOADERS[view](controller.signal).then(results => {
+      if (!controller.signal.aborted) { setJobs(results); install(results.map(item => item.interaction_state)); }
+    }).catch(() => { if (!controller.signal.aborted) setError(true); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [view, attempt]);
-
-  async function act(jobId: number, type: 'save' | 'dismiss' | 'applied') {
-    if (busy.current.has(jobId)) return;
-    busy.current.add(jobId);
-    setPending(current => ({ ...current, [jobId]: type }));
-    setErrors(current => ({ ...current, [jobId]: '' }));
-    try {
-      const event = await recordInteraction(jobId, type);
-      setStates(current => confirmInteraction(current, jobId, event));
-      setAnnouncement(type === 'dismiss' ? 'Job dismissed.' : type === 'save' ? 'Job saved.' : 'Marked as applied.');
-    } catch {
-      const message = type === 'save' ? 'Could not save this job.' : type === 'dismiss' ? 'Could not dismiss this job.' : 'Could not mark this job as applied.';
-      setErrors(current => ({ ...current, [jobId]: `${message} Please try again.` }));
-    } finally {
-      busy.current.delete(jobId);
-      setPending(current => ({ ...current, [jobId]: undefined }));
-    }
-  }
-
-  function apply(jobId: number) {
-    // A native target=_blank link handles navigation synchronously. Never cancel it.
-    setErrors(current => ({ ...current, [jobId]: '' }));
-    void recordInteraction(jobId, 'click')
-      .then(event => setStates(current => confirmInteraction(current, jobId, event)))
-      .catch(() => setErrors(current => ({ ...current, [jobId]: 'Click could not be recorded. The application link is still available.' })));
-  }
-
-  const visible = visibleJobs(view, recommendations, states);
-  return (
-    <main className="recommendations-page" id="main-content">
-      <div className="page-heading"><h1>{TITLES[view]}</h1><span className="workspace-label"><span />{loading ? 'Loading jobs' : `${visible.length} ${visible.length === 1 ? 'job' : 'jobs'}`}</span></div>
-      <div className="recommendations-intro"><p>{view === 'recommended' ? <>Based on your <a href="/profile">profile preferences</a>.</>
-        : view === 'saved' ? 'Jobs you bookmarked.' : 'Your application history.'}</p><span>Role 40 · Skills 30 · Location 20 · Term 10</span></div>
-      <p className="workflow-notice" role="status">{announcement}</p>
-      {loading ? <div className="loading-profile" role="status" aria-label={`Loading ${TITLES[view].toLowerCase()} jobs`}>
-        <span>Loading {TITLES[view].toLowerCase()} jobs…</span>{[0, 1, 2].map(value => <div className="skeleton-field" key={value} />)}
-      </div> : loadError ? <div className="load-error" role="alert"><p>Could not load {TITLES[view].toLowerCase()} jobs.</p>
-        <button className="button button-secondary" onClick={() => setAttempt(value => value + 1)}>Try again</button>
-      </div> : !visible.length ? <p className="recommendations-empty">{EMPTY[view]}</p>
-      : <>
-        <div className="recommendation-list">
-          {visible.slice(0, limit).map(recommendation => <RecommendationCard key={recommendation.job.id} recommendation={recommendation}
-            view={view}
-            interactionState={states[recommendation.job.id] ?? emptyInteraction(recommendation.job.id)}
-            pending={pending[recommendation.job.id]} error={errors[recommendation.job.id]}
-            onApply={apply} onSave={id => void act(id, 'save')} onDismiss={id => void act(id, 'dismiss')} onApplied={id => void act(id, 'applied')} />)}
-        </div>
-        <div className="recommendations-more"><span>Showing {Math.min(limit, visible.length)} of {visible.length}</span>
-          {limit < visible.length && <button className="button button-secondary" onClick={() => setLimit(value => value + 24)}>Show more</button>}
-        </div>
-      </>}
-    </main>
-  );
+  }, [view, revision, attempt, install]);
+  const visible = visibleJobs(view, jobs, workflow.states) as CandidateJob[];
+  return <main className="workspace recommendations-page" id="main-content">
+    <div className="page-heading"><h1 tabIndex={-1}>{TITLES[view]}</h1><span className="workspace-label">{loading ? 'Loading…' : `${visible.length} ${visible.length === 1 ? 'job' : 'jobs'}`}</span></div>
+    {loading ? <div role="status" className="loading-profile">Loading jobs…{[0, 1, 2].map(value => <div className="skeleton-row" key={value} />)}</div>
+      : error ? <div className="load-error" role="alert"><p>Could not load {TITLES[view].toLowerCase()} jobs.</p><button className="button" onClick={() => setAttempt(value => value + 1)}>Try again</button></div>
+      : !visible.length ? <p className="empty-state">{EMPTY[view]} {view === 'recommended' && <button className="text-button" onClick={onOpenProfile}>Edit profile</button>}</p>
+      : <><div className="recommendation-list">{visible.slice(0, limit).map(item => <RecommendationCard key={item.job.id} recommendation={item} view={view}
+        interactionState={workflow.states[item.job.id] ?? emptyInteraction(item.job.id)} pending={workflow.pending[item.job.id]} error={workflow.errors[item.job.id]}
+        onOpenJob={onOpenJob} onOpenProfile={onOpenProfile} onApply={workflow.apply} onSave={(id, type) => void workflow.act(id, type)}
+        onApplied={(id, type) => void workflow.act(id, type)} onDismiss={id => void workflow.act(id, 'dismiss')} />)}</div>
+        <div className="collection-footer"><span>Showing {Math.min(limit, visible.length)} of {visible.length}</span>
+          {limit < visible.length && <button className="button" onClick={() => setLimit(value => value + 24)}>Show more</button>}</div></>}
+  </main>;
 }

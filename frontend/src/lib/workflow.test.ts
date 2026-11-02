@@ -64,6 +64,18 @@ test('late responses cannot replace a newer event-cursor snapshot', () => {
   const initial = { 1: { ...emptyInteraction(1), applied: true, last_event_id: 9 } };
   assert.deepEqual(confirmInteraction(initial, 1, receipt('save', { saved: true }))[1], initial[1]);
 });
+test('confirmed inverses remove flags and prevent late positive receipts restoring them', () => {
+  const saved = confirmInteraction({}, 1, receipt('save', { saved: true }, 1, 1));
+  const removed = confirmInteraction(saved, 1, receipt('unsave', { saved: false }, 1, 2));
+  assert.equal(removed[1].saved, false);
+  assert.deepEqual(visibleJobs('saved', [recommendation], removed), []);
+  assert.equal(confirmInteraction(removed, 1, receipt('save', { saved: true }, 1, 1))[1].saved, false);
+  const applied = confirmInteraction(removed, 1, receipt('applied', { applied: true }, 1, 3));
+  const unmarked = confirmInteraction(applied, 1, receipt('unapplied', { applied: false }, 1, 4));
+  assert.deepEqual(visibleJobs('applied', [recommendation], unmarked), []);
+  assert.deepEqual(visibleJobs('recommended', [recommendation], unmarked), [recommendation]);
+  assert.equal(confirmInteraction(unmarked, 1, receipt('applied', { applied: true }, 1, 3))[1].applied, false);
+});
 test('inactive saved/applied jobs remain in history but not discovery', () => {
   const jobs = [{ ...recommendation, job: { ...recommendation.job, status: 'closed' as const } }];
   const states = indexInteractions([{ ...emptyInteraction(1), saved: true, applied: true }]);

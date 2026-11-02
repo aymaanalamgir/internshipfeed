@@ -36,13 +36,16 @@ class CandidateProfileUpdate(BaseModel):
         return list(dict.fromkeys(item.strip() for item in value if item.strip()))
 
 
-class Resume(BaseModel):
+class ResumeMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: int = Field(gt=0)
     candidate_profile_id: int = Field(gt=0)
     filename: str
-    extracted_text: str
     uploaded_at: datetime
+
+
+class Resume(ResumeMetadata):
+    extracted_text: str
 
 
 class JobKeywords(BaseModel):
@@ -171,7 +174,15 @@ class MatchResult(BaseModel):
 
 class InteractionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["click", "save", "dismiss", "applied"]
+    type: Literal["click", "save", "unsave", "dismiss", "applied", "unapplied"]
+
+
+class RankedMatchResult(MatchResult):
+    """score stays profile fit; final_score controls Recommended ordering."""
+    profile_score: int = Field(ge=0, le=100)
+    behavior_score: int = Field(ge=0, le=100)
+    final_score: int = Field(ge=0, le=100)
+    behavior_reasons: List[str]
 
 
 class JobInteraction(BaseModel):
@@ -179,7 +190,7 @@ class JobInteraction(BaseModel):
     id: int = Field(gt=0)
     candidate_profile_id: int = Field(gt=0)
     canonical_job_id: int = Field(gt=0)
-    interaction_type: Literal["click", "save", "dismiss", "applied"]
+    interaction_type: Literal["click", "save", "unsave", "dismiss", "applied", "unapplied"]
     created_at: datetime
 
 
@@ -201,6 +212,14 @@ class InteractionReceipt(JobInteraction):
 
 class CandidateJobView(MatchResult):
     interaction_state: JobInteractionState
+    term: Optional[str] = None
+    keywords: JobKeywords = Field(default_factory=JobKeywords)
+
+
+class RecommendedJobView(RankedMatchResult):
+    interaction_state: JobInteractionState
+    term: Optional[str] = None
+    keywords: JobKeywords = Field(default_factory=JobKeywords)
 
 
 class StoredCanonicalJob(CanonicalJob):

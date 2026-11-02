@@ -6,13 +6,18 @@ Implemented flow:
 flowchart LR
     P[(candidate_profiles)] --> M[Deterministic matching]
     J[Visible canonical jobs + JobDetails] --> M
-    M --> R[GET /api/recommendations]
+    M --> COMBINE[75% profile + 25% behavioral score]
+    E[(job_interactions + metadata)] --> B[Deterministic behavior preferences]
+    B --> COMBINE
+    COMBINE --> R[GET /api/recommendations]
 ```
 
 `matching.py` uses pure string/set rules. `GET /api/recommendations` reads the
 development profile and existing `JobDetails`, scores in Python, and returns
 results. Scores are recomputed on every request. No database migration, score
-storage, AI, embeddings, interaction ranking, or résumé-text ranking is involved.
+storage, AI, embeddings, or résumé-text ranking is involved. Separate behavior
+preferences now refine Recommended order; [behavioral.md](behavioral.md) documents
+their exact rules. They never change these explicit profile components.
 Graduation year is not a scoring input. No candidate or job data is modified.
 
 ## Exact scoring
@@ -130,7 +135,11 @@ or year earns 0, even if the other part agrees. Unstated information is not gues
 
 ```text
 job: CanonicalJob (the existing seven fields)
-score: integer 0..100
+score: integer 0..100 (unchanged profile fit)
+profile_score: same value as score
+behavior_score: integer 0..100, neutral 50
+final_score: half-up rounded 75% profile + 25% behavior
+behavior_reasons: at most two positive preference explanations
 role_score: integer 0..40
 skills_score: integer 0..30
 location_score: integer 0..20
@@ -140,7 +149,7 @@ reasons: list of evidence explanations
 interaction_state: SQL-derived workflow flags, timestamps, and event cursor
 ```
 
-`min_score` is inclusive, defaults to 0, and validates 0–100 (invalid values receive
+`min_score` still filters profile fit, is inclusive, defaults to 0, and validates 0–100 (invalid values receive
 HTTP 422). An empty profile still returns visible jobs with zero scores and empty
 reasons. Closed/dead canonical jobs are excluded; unknown jobs follow current feed
 visibility. Discovery also excludes dismissed and applied jobs using PostgreSQL
@@ -148,9 +157,12 @@ state. Saved jobs remain eligible unless dismissed/applied. No profile ID or aut
 profile returns HTTP 503 without reseeding; database failures use the existing
 sanitized HTTP 503 handler.
 
-Sort order is score descending, exact `posted_at` descending with nulls last, then
-canonical ID descending. Posting date breaks ties and never earns points. The
-workflow visibility is separate from score calculation. `/api/saved` and
+Recommended sort order is final score, profile score, exact `posted_at` with nulls
+last, then canonical ID, all descending. `rank_jobs()` remains a pure profile-fit
+ranking; `rank_recommendations()` composes the separate signals. Posting date
+breaks ties and never earns points. Neutral behavior preserves the old ordering.
+Workflow visibility is separate from score calculation. `/api/saved` and
 `/api/applied` use the same component calculations, including for retained closed
 jobs, but sort by latest save/application time. Interactions never add or subtract
-points. See [interactions.md](interactions.md) for collection membership and history.
+profile points. See [interactions.md](interactions.md) for collection membership
+and [behavioral.md](behavioral.md) for inferred preference scoring.

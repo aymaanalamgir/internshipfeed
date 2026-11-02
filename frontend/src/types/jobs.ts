@@ -19,7 +19,9 @@ export interface Recommendation {
   reasons: string[];
 }
 
-export type InteractionType = 'click' | 'save' | 'dismiss' | 'applied';
+export type SaveAction = 'save' | 'unsave';
+export type AppliedAction = 'applied' | 'unapplied';
+export type InteractionType = 'click' | SaveAction | 'dismiss' | AppliedAction;
 
 export interface InteractionEvent {
   id: number;
@@ -46,7 +48,44 @@ export interface InteractionReceipt extends InteractionEvent {
 
 export interface CandidateJob extends Recommendation {
   interaction_state: InteractionState;
+  term: string | null;
+  keywords: JobKeywords;
 }
+
+export interface RankingSignals {
+  profile_score: number;
+  behavior_score: number;
+  final_score: number;
+  behavior_reasons: string[];
+}
+
+export interface RankedRecommendation extends CandidateJob, RankingSignals {}
 
 export type JobView = 'recommended' | 'saved' | 'applied';
 export type InteractionStates = Record<number, InteractionState>;
+
+export interface JobKeywords {
+  languages: string[];
+  frameworks: string[];
+  tools_and_platforms: string[];
+  concepts: string[];
+  requirements: string[];
+}
+export interface SourceReference {
+  company: string;
+  source_id: number;
+  source: string;
+  title: string;
+  location: string;
+  term: string | null;
+  status: CanonicalJob['status'];
+}
+export interface JobDetails {
+  job: CanonicalJob;
+  term: string | null;
+  description: string | null;
+  keywords: JobKeywords;
+  sources: SourceReference[];
+}
+export interface JobSource { id: number; name: string; url: string; }
+export interface SyncRun { id: string; status: string; inserted?: number; updated?: number; processed?: number; scraped?: number; }

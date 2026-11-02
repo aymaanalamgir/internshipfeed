@@ -18,7 +18,7 @@ from psycopg.conninfo import make_conninfo
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from internshipfeed import db
-from internshipfeed.models import CandidateProfileUpdate, JobKeywords, JobListing
+from internshipfeed.models import CandidateProfileUpdate, JobKeywords, JobListing, MatchResult
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--browser-executable')
@@ -95,22 +95,39 @@ try:
             page.goto(base + '/recommendations')
             expect(page.locator('.recommendation-card')).to_have_count(4)
             assert card(first).locator('.recommendation-actions').locator('a,button').all_text_contents() == ['Apply', 'Save', 'Mark applied', '']
+            expect(card(first).locator('.match-hint')).to_contain_text('Role matches')
+            screenshots = ROOT / 'data' / 'screenshots'
+            screenshots.mkdir(parents=True, exist_ok=True)
+            page.evaluate('document.fonts.ready')
+            page.screenshot(path=str(screenshots / 'recommended-desktop.png'), full_page=True)
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+            page.screenshot(path=str(screenshots / 'recommended-mobile.png'), full_page=True)
+            page.set_viewport_size({'width': 1280, 'height': 1000})
+            card(first).locator('.job-title').click()
+            detail = page.get_by_role('dialog')
+            expect(detail.locator('.job-description')).to_have_text('Build software tools.')
+            expect(detail.locator('.skill-tag').first).to_be_visible()
+            assert page.url == base + '/recommendations'
 
             held = []
             path = '**/api/jobs/%s/interactions' % first
             page.route(path, lambda route: held.append(route))
-            card(first).get_by_role('button', name='Save job', exact=True).click()
+            detail.get_by_role('button', name='Save job', exact=True).click()
             expect(card(first).get_by_role('button', name='Save job', exact=True)).to_have_text('Saving…')
             expect(card(first).get_by_role('button', name='Save job', exact=True)).to_have_attribute('aria-pressed', 'false')
             assert count('save') == 0
             held[0].continue_()
             page.unroute(path)
-            expect(card(first).get_by_role('button', name='Job saved', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(card(first).get_by_role('button', name='Unsave job', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(detail.get_by_role('button', name='Unsave job', exact=True)).to_have_attribute('aria-pressed', 'true')
             assert count('save') == 1
+            page.keyboard.press('Escape')
+            expect(card(first).locator('.job-title')).to_be_focused()
             page.reload()
-            expect(card(first).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
+            expect(card(first).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
             page.get_by_role('link', name='Saved', exact=True).click()
-            expect(card(first).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
+            expect(card(first).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
             page.reload()
             expect(card(first)).to_be_visible()
             page.get_by_role('link', name='Recommended', exact=True).click()
@@ -156,25 +173,25 @@ try:
             expect(card(first)).to_be_visible()
             expect(card(third)).to_have_count(0)
             page.get_by_role('link', name='Applied', exact=True).click()
-            expect(card(third).get_by_role('button', name='Job marked as applied', exact=True)).to_have_text('Applied')
+            expect(card(third).get_by_role('button', name='Unmark job as applied', exact=True)).to_have_text('Applied')
             expect(card(third).locator('.applied-date')).to_be_visible()
             expect(card(third).get_by_role('link', name='Open application', exact=True)).to_be_visible()
             expect(card(third).get_by_role('button', name='Dismiss job', exact=True)).to_have_count(0)
             card(third).get_by_role('button', name='Save job', exact=True).click()
-            expect(card(third).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
+            expect(card(third).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
             page.reload()
-            expect(card(third).get_by_role('button', name='Job marked as applied', exact=True)).to_be_visible()
-            expect(card(third).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
+            expect(card(third).get_by_role('button', name='Unmark job as applied', exact=True)).to_be_visible()
+            expect(card(third).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
             page.get_by_role('link', name='Saved', exact=True).click()
             expect(card(first)).to_be_visible()
-            expect(card(third).get_by_role('button', name='Job marked as applied', exact=True)).to_be_visible()
+            expect(card(third).get_by_role('button', name='Unmark job as applied', exact=True)).to_be_visible()
             page.reload()
-            expect(card(third).get_by_role('button', name='Job saved', exact=True)).to_be_visible()
+            expect(card(third).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
             assert {row['job']['id'] for row in page.request.get(base + '/api/recommendations').json()} == {first, ids[3]}
             for endpoint in ('recommendations', 'saved', 'applied'):
                 for row in page.request.get(base + '/api/' + endpoint).json():
                     old = next(item for item in original if item['job']['id'] == row['job']['id'])
-                    assert {key: value for key, value in row.items() if key != 'interaction_state'} == {key: value for key, value in old.items() if key != 'interaction_state'}
+                    assert {key: row[key] for key in MatchResult.model_fields} == {key: old[key] for key in MatchResult.model_fields}
             assert conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall() == before
             events = conn.execute('SELECT * FROM job_interactions ORDER BY id').fetchall()
             assert [event['interaction_type'] for event in events] == ['save', 'click', 'dismiss', 'applied', 'save']
@@ -219,6 +236,98 @@ try:
                 expect(card(hidden)).to_have_count(0)
             page.reload()
             expect(card(ids[3])).to_be_visible()
+            # Known ranking example, using new role/company metadata unrelated to
+            # the earlier workflow fixtures. All three have identical profile fit.
+            rank_ids = []
+            for index, title in enumerate(('Data Engineer Intern', 'Data Engineer Intern', 'Product Manager Intern')):
+                job = JobListing(company='Ranking Lab', title=title, location='Unknown',
+                    url='https://applications.example.test/rank/' + str(index), source=source['repository'], source_id=source['id'],
+                    external_id='rank-' + str(index), status='open', snapshot_id=str(snapshot['id']), source_line=index + 10)
+                db.save_job(conn, job)
+                rank_ids.append(db.get_source_job(conn, source['id'], job.external_id).canonical_job_id)
+            history_id, data_id, product_id = rank_ids
+            update = page.request.put(base + '/api/profile', data={'target_roles': ['Data Engineering', 'Product Management'],
+                'skills': [], 'preferred_locations': [], 'preferred_terms': [], 'graduation_year': None})
+            assert update.status == 200
+            baseline = [row for row in page.request.get(base + '/api/recommendations').json() if row['job']['id'] in rank_ids]
+            assert [row['job']['id'] for row in baseline] == [product_id, data_id, history_id]
+            assert all((row['profile_score'], row['behavior_score'], row['final_score']) == (40, 50, 43) for row in baseline)
+            page.set_viewport_size({'width': 1280, 'height': 1000})
+            page.goto(base + '/recommendations')
+            card(history_id).get_by_role('button', name='Save job', exact=True).click()
+            expect(card(history_id).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
+            card(history_id).get_by_role('button', name='Mark job as applied', exact=True).click()
+            expect(card(history_id)).to_have_count(0)
+            page.reload()
+            expect(card(data_id)).to_be_visible()
+            personalized = [row for row in page.request.get(base + '/api/recommendations').json() if row['job']['id'] in rank_ids]
+            assert [row['job']['id'] for row in personalized] == [data_id, product_id]
+            assert [(row['profile_score'], row['behavior_score'], row['final_score']) for row in personalized] == [(40, 65, 46), (40, 52, 43)]
+            assert page.locator('.recommendation-card').first.get_attribute('data-job-id') == str(data_id)
+            expect(card(data_id).locator('.match-score')).to_contain_text('46')
+            card(data_id).get_by_role('button', name='Why this score for Data Engineer Intern', exact=True).click()
+            expect(card(data_id).locator('.ranking-breakdown')).to_contain_text('Profile fit40 / 100')
+            expect(card(data_id).locator('.ranking-breakdown')).to_contain_text('Preference fit65 / 100')
+            expect(card(data_id).locator('.behavior-reasons')).to_contain_text("Similar to roles you've shown interest in")
+            page.evaluate('document.fonts.ready')
+            page.screenshot(path=str(screenshots / 'behavioral-recommended-desktop.png'), full_page=True)
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(screenshots / 'behavioral-recommended-mobile.png'), full_page=True)
+            page.reload()
+            expect(card(data_id)).to_be_visible()
+            assert page.locator('.recommendation-card').first.get_attribute('data-job-id') == str(data_id)
+            print('Known ranking verified after refresh: Data/Product profile fit 40/40; neutral rank 43/43; save+apply Data history changes behavior to 65/52 and final rank to 46/43, placing Data first.')
+            # Undo from history views, then toggle both controls inside details.
+            page.get_by_role('link', name='Saved', exact=True).click()
+            expect(card(history_id)).to_be_visible()
+            inverse_path = '**/api/jobs/%s/interactions' % history_id
+            page.route(inverse_path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
+            card(history_id).get_by_role('button', name='Unsave job', exact=True).click()
+            expect(card(history_id).get_by_text('Could not unsave this job. Please try again.', exact=True)).to_be_visible()
+            page.unroute(inverse_path)
+            pending_inverse = []
+            page.route(inverse_path, lambda route: pending_inverse.append(route))
+            card(history_id).get_by_role('button', name='Unsave job', exact=True).click()
+            expect(card(history_id).get_by_role('button', name='Unsave job', exact=True)).to_have_text('Removing…')
+            expect(card(history_id)).to_be_visible()
+            pending_inverse[0].continue_()
+            page.unroute(inverse_path)
+            expect(card(history_id)).to_have_count(0)
+            page.reload()
+            expect(card(history_id)).to_have_count(0)
+            page.get_by_role('link', name='Applied', exact=True).click()
+            expect(card(history_id).get_by_role('button', name='Save job', exact=True)).to_be_visible()
+            page.route(inverse_path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
+            card(history_id).get_by_role('button', name='Unmark job as applied', exact=True).click()
+            expect(card(history_id).get_by_text('Could not unmark this job as applied. Please try again.', exact=True)).to_be_visible()
+            page.unroute(inverse_path)
+            card(history_id).get_by_role('button', name='Unmark job as applied', exact=True).click()
+            expect(card(history_id)).to_have_count(0)
+            page.reload()
+            expect(card(history_id)).to_have_count(0)
+            page.get_by_role('link', name='Recommended', exact=True).click()
+            expect(card(history_id)).to_be_visible()
+            card(history_id).locator('.job-title').click()
+            undo_detail = page.get_by_role('dialog')
+            undo_detail.get_by_role('button', name='Save job', exact=True).click()
+            expect(card(history_id).get_by_role('button', name='Unsave job', exact=True)).to_have_attribute('aria-pressed', 'true')
+            undo_detail.get_by_role('button', name='Unsave job', exact=True).click()
+            expect(card(history_id).get_by_role('button', name='Save job', exact=True)).to_have_attribute('aria-pressed', 'false')
+            undo_detail.get_by_role('button', name='Mark job as applied', exact=True).click()
+            expect(card(history_id)).to_have_count(0)
+            undo_detail.get_by_role('button', name='Unmark job as applied', exact=True).click()
+            expect(card(history_id)).to_be_visible()
+            page.keyboard.press('Escape')
+            page.reload()
+            expect(card(history_id)).to_be_visible()
+            expect(card(history_id).get_by_role('button', name='Save job', exact=True)).to_be_visible()
+            expect(card(history_id).get_by_role('button', name='Mark job as applied', exact=True)).to_be_visible()
+            undo_history = conn.execute('SELECT interaction_type FROM job_interactions WHERE canonical_job_id=%s ORDER BY id', (history_id,)).fetchall()
+            assert [row['interaction_type'] for row in undo_history] == ['save', 'applied', 'unsave', 'unapplied', 'save', 'unsave', 'applied', 'unapplied']
+            assert history_id not in [entry.details.job.id for entry in db.behavior_history(conn, candidate['id'])]
+            print('Reversible controls verified: Save/Unsave and Applied/Unmark, shared drawer state, pending confirmation, failure/retry, Saved/Applied removal, restored Recommended membership, refresh persistence, and canceled preference evidence.')
             assert not errors, errors
             browser.close()
             print('Product-state browser + PostgreSQL checks passed: Recommended/Saved/Applied membership, Save+Applied and Save+Dismiss precedence, navigation, repeated refreshes, applied timestamp, click/new-tab safety, failed-click navigation, failure/retry, unchanged scores, and mobile widths.')

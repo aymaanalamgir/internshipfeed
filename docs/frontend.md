@@ -1,12 +1,13 @@
-# Candidate frontend
+# Frontend
 
-The profile and actionable recommendation screens use React + TypeScript and Vite.
-It coexists with the existing vanilla jobs feed. There is no router package,
-global state library, UI framework, or duplicated recommendation logic.
+InternshipFeed is one React + TypeScript application. Recommended is the home
+experience; All listings is a neutral directory. Saved and Applied retain their
+existing workflow semantics. Profile and job details open in right-side drawers
+over the current view. The old vanilla directory UI has been removed.
 
-## Run
+## Run and routes
 
-With Node.js 22.12+ and the existing Python/PostgreSQL setup:
+Build with Node.js 22.12+ and use the existing Python/PostgreSQL setup:
 
 ```sh
 npm --prefix frontend ci
@@ -14,192 +15,209 @@ npm --prefix frontend run build
 .venv/bin/python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
 
-Visit `/profile` for the profile, `/recommendations` for discovery, `/saved` for
-bookmarks, `/applied` for application history, and
-`/feed` or `/` for the existing feed. Navigation links all three screens. FastAPI
-serves the same compiled React HTML at those four screen routes (including
-trailing-slash forms), with compiled assets under `/profile/assets`. It returns HTTP
-503 if the frontend build is absent. Restart FastAPI after backend route changes.
-Existing profile/job APIs and `/web` assets are unchanged.
-`frontend/dist` and `node_modules` are ignored; `package-lock.json` is committed.
+| Route | Experience |
+| --- | --- |
+| `/`, `/recommendations` | Recommended, ordered by server profile + preference rank. |
+| `/listings` | All listings: search, location/term/source/status filters, chronological order. |
+| `/saved` | Saved and not dismissed; includes saved/applied combinations. |
+| `/applied` | Application history, newest application first. |
+| `/profile` | Compatibility entry: Recommended with Profile drawer open. Closing returns the URL to `/`. |
+| `/feed` | Compatibility alias for the React All listings view. |
 
-For live development, keep FastAPI running and use another terminal:
+FastAPI serves the same compiled HTML for these routes and trailing-slash forms.
+Production assets keep their existing `/profile/assets` URL prefix. Missing builds
+return a clean 503. Restart FastAPI after backend route updates. `frontend/dist`
+and `node_modules` are ignored; dependency inputs are unchanged in this pass.
 
-```sh
-npm --prefix frontend run dev
-```
+For development, run `npm --prefix frontend run dev` alongside FastAPI and open
+`http://127.0.0.1:5173/`. Vite proxies only `/api`, preserving Host/Origin for the
+existing local-write guard. Set `BACKEND_URL=http://127.0.0.1:8004` if necessary.
+All UI routes stay on Vite. No router package or global state library is needed.
 
-Open `http://127.0.0.1:5173/profile`, `/recommendations`, `/saved`, or `/applied`. Vite proxies `/api`, `/feed`, and `/web`
-to FastAPI. If the backend uses another port:
+## Information architecture and navigation
 
-```sh
-BACKEND_URL=http://127.0.0.1:8004 npm --prefix frontend run dev
-```
+The restrained top bar contains Recommended, All listings, Saved, Applied, and a
+separate Profile button. Active destinations use a fine orange underline. The
+wordmark returns home. Ordinary destination links load their server-backed view;
+Profile does not navigate, and closing either drawer preserves the underlying
+page, filter input, and browsing context. A successful profile save refreshes the
+current collection so revised recommendations come from the backend.
 
-The proxy preserves the browser's Host/Origin pair so the existing local-only
-mutation checks work without changing CORS or backend access rules. All production
-requests are same-origin. No frontend environment variable contains credentials.
-Vite uses a root base during development so both screen paths work, and the
-existing `/profile/` asset base for production builds. App selects the screen by
-pathname; no router package is required.
+Recommended/Saved/Applied share `JobCollectionPage` and `RecommendationCard`.
+All listings uses compact `ListingsPage` rows without scores or preference
+explanations. Both surfaces share tags, actions, and the same job drawer. They
+progressively render 24 cards or 40 rows with Show more.
 
-## Experience and state
+## Design system
 
-`ProfilePage` loads `GET /api/profile` with cancellation on unmount. Loading uses a
-static skeleton; failures show a concise message and retry button. `ProfileForm`
-owns the editable draft, pending tag input, saved baseline, validation, and save
-state. Inputs and controls are disabled during save, and errors preserve edits.
+`styles/tokens.css` is the single token source; `styles.css` contains component,
+layout, focus, and responsive rules. No CSS/UI/icon framework was introduced.
 
-Roles, skills, locations, and terms use keyboard-friendly chips: Enter adds a
-trimmed value, exact duplicates are ignored, and labelled buttons remove values.
-Case and order remain intact. Save also includes pending text even without Enter.
-The full five-field PUT payload excludes ID and timestamps. Empty lists and a
-blank graduation year intentionally clear values. Client year validation follows
-the backend's 1900–2200 range; the API remains authoritative. Success adopts the
-normalized server response and shows a small Saved message. Refresh reloads the
-persisted database state.
+| Token | Value / purpose |
+| --- | --- |
+| `--bg` | `#f6f4ef`, warm paper background |
+| `--surface` | `#fffefa`, cards/drawers/inputs |
+| `--surface-muted` | `#f0eee7`, quiet tags/placeholders |
+| `--text`, `--text-muted` | `#252522`, `#6c6a63` |
+| `--border`, `--border-strong` | `#dedbd3`, `#bcb8ae` |
+| `--accent`, `--accent-soft` | `#a44c30`, `#f4eae3` |
+| `--danger-muted` | `#993d31`, inline errors |
+| Spacing | 4, 8, 12, 16, 24, 32, 48 px |
+| Radius | 3 px panels/buttons, 2 px technical tags |
+| Typography | Self-hosted IBM Plex Sans 400/500/600; system monospace for compact tags |
 
-`ResumeUpload` opens a PDF-restricted file picker and validates filename, compatible
-MIME, and the 5 MiB limit before sending multipart field `file`. The browser sets
-the multipart boundary. The backend alone parses the PDF and enforces 10 pages.
-The UI shows the selected filename, uploading state, success, or a concise error.
-Selecting the same file again supports retry. Additional uploads append history;
-they do not replace existing records or modify the profile.
+Page titles are 25 px; job titles are the strongest card text at 18 px, company
+and metadata 12 px, supporting labels 10–11 px. Orange is reserved for active
+navigation, compact scores, and confirmed Saved/Applied state. Surfaces use thin
+borders without shadows, gradients, oversized headings, gauges, or large panels.
+Apply uses near-black; other controls are quiet borders or plain icon buttons.
 
-Only returned résumé metadata is retained by React. Extracted text is never
-displayed, inspected, or used to update preferences. Filename/status are session
-state, since there is no résumé-history endpoint. Reloading shows that no file
-has been uploaded in the current session. Arbitrary server diagnostics are not
-rendered. There is no upload percentage because the current request uses fetch;
-the Uploading state covers the request and backend extraction.
+`SkillTag` renders one consistent thin-border technical tag in profile controls,
+cards, rows, and details. Profile skills remain a flat editable array; no category
+inference is added. Details use only actual nonempty language/framework/tool/
+concept groups from the backend. Tags wrap and removal buttons have specific
+accessible labels. `Icon` centralizes the existing SVG bookmark/clock/X/external
+language and adds matching profile/update icons.
 
-## Product views and actions
+## Cards, actions, and server state
 
-`JobCollectionPage` is reused by Recommended, Saved, and Applied. Each screen owns
-its server-loaded collection and calls one API: `/api/recommendations`,
-`/api/saved`, or `/api/applied`. Each response includes authoritative
-`interaction_state`; there is no second state fetch or raw event replay. Loading
-errors produce a retry state instead of a partially reconstructed list. Server
-ordering is preserved and 24 cards are progressively rendered with Show more.
+Cards show company, clickable title, location/term, available technical skills,
+a compact score, one shortened backend fit reason, a preference reason when
+available, and Why this job? Expanded detail
+shows the backend's separate Profile/Preference/Final scores, at most two behavior
+reasons, and original profile component evidence. React does not score or reorder
+recommendations. Saved/Applied show profile fit; Applied includes its event date
+and Open application link. Missing metadata is omitted rather than inferred.
 
-Recommended excludes dismissed/applied jobs. Saved includes saved nondismissed
-jobs, including applied ones. Applied includes application history even if later
-dismissed. The same card renders each view, with a UTC application date and Open
-application link in Applied. Closed/unavailable postings remain in history with
-their status shown. The compact navigation is Recommended/Saved/Applied/Profile;
-the wordmark links to the existing job feed. Mobile navigation wraps into two rows.
+`JobActions` fixes action order everywhere: Apply, Save, Applied, Dismiss. Applied
+history omits Dismiss as before. Apply is a native absolute HTTP(S) anchor with
+`target="_blank"` and `rel="noopener noreferrer"`; click telemetry cannot delay
+navigation and never implies a completed application. Invalid URLs disable Apply.
 
-`RecommendationCard` receives recommendation/state data and callbacks. It shows
-company, title, location, optional exact posting date, and matched technologies.
-The score is a rule score out of 100 rather than a probability. Its compact
-disclosure expands the component values and unchanged reason strings.
+`useJobActions` owns transient pending/error/announcement state shared between a
+view and its drawer. Successful actions install server snapshots through the
+existing event cursor helper; requests arriving late cannot overwrite newer
+state. No raw event semantics are replayed in React. Workflow membership updates
+only after confirmation, including removal after Applied/Dismiss. Failed actions
+retain the previous state and allow retry. Navigation/refresh restores PostgreSQL
+state; preference rank recomputes on the next Recommended load.
 
-Actions are ordered Apply, bookmark Save, clock Applied, then quiet × Dismiss.
-Apply is a native HTTP(S) anchor with `target="_blank"` and `rel="noopener noreferrer"`.
-Its callback starts click recording without awaiting or cancelling navigation.
-Even an HTTP 503 cannot block opening the external URL. Missing or invalid links
-render an unavailable Apply control. A click never marks the job applied.
+Save/Saved and Mark applied/Applied are reversible controls. Clicking an active
+bookmark appends `unsave`; clicking Applied appends `unapplied`. Accessible labels
+and tooltips announce the inverse action. Shared pending state prevents duplicate
+clicks; failed reversals retain the active state. Unsave removes a card from Saved,
+unmark removes it from Applied, and nondismissed active jobs return to Recommended
+on its next load. Details and background cards share the confirmed snapshot.
 
-Other actions use confirmed updates. The specific card disables utilities while
-its request is pending, and success installs the SQL-derived snapshot returned
-by POST. `last_event_id` rejects stale responses without relying on JavaScript's
-millisecond timestamp precision. React never interprets event types to derive
-Saved/Dismissed/Applied flags.
-Failures retain the card/state and show a retryable inline error. Saved and
-Applied actions are one-directional; no event history is deleted. A dismiss is
-removed only after success and remains hidden after refresh. Applied jobs leave
-Recommended but remain in Saved if bookmarked. A merge response updates both a
-stale displayed ID and its current canonical ID using the server's state.
-The API module owns requests; there are no fetch calls inside card JSX. See
-[interactions.md](interactions.md) for the event projection and API contract.
+Collections attach state directly. All listings loads `/api/feed` plus the
+existing `/api/interactions` projection together, showing a retry state if either
+fails. Client filters only browse the returned metadata; they do not infer fit,
+reconcile sources, or derive interaction flags. Existing discovery exclusions
+remain: dismissed/applied jobs are absent from Recommended and All listings.
+The directory is broader because explicit profile fit never filters or ranks it.
 
-## Design
+## Drawers and profile
 
-Self-hosted IBM Plex Sans (400/500/600) supplies compact, legible type with no
-external font request. Warm off-white `#f6f4ef`, paper `#fffefa`, ink `#252522`,
-muted grey `#706e67`, and terracotta `#a44c30` are CSS tokens. Orange is limited
-to focus, navigation accents, and the primary action. Borders are 1 px; radii
-are 3–5 px. Spacing uses small 4–8 px gaps and 20–32 px section intervals.
+`Drawer` wraps native `<dialog>`: background content is inert, Escape/backdrop/X
+close it, Tab/Shift-Tab wrap between enabled visible controls, and focus returns to
+the opener. If an action removes that opener, focus falls back to the page title.
+Body scrolling is locked while open. Drawers become full-width sheets on narrow
+screens, with an independently scrollable body and a persistent close control.
+Reduced-motion settings remove transitions.
 
-The desktop margin note collapses away on mobile, chips wrap, and upload controls
-stack naturally. Labels, field-associated year errors, live status messages,
-semantic buttons, a skip link, and visible focus treatments support keyboard use.
-There are no cards around each section, gradients, heavy shadows, or entrance
-animations. The existing feed retains its behavior and presentation.
-Recommendation cards use the same tokens with a solid near-black Apply link,
-small utility icons, restrained active orange, and a 1 px border per opportunity.
+`ProfileDrawer` loads the development profile and reuses `ProfileForm`, `TagInput`,
+and `ResumeUpload`. Tags support Enter, removal, and duplicate handling. Explicit
+Save changes includes pending input and preserves the existing complete payload.
+Errors retain the draft; confirmation is subtle. Closing discards unsaved edits.
+The backend remains authoritative for profile validation and PDF limits.
 
-## Files
+Résumé presentation is a small filename/date row with Upload PDF or Replace PDF.
+`GET /api/resumes/latest` returns only the current candidate's latest metadata,
+restoring it after reopening or refresh. No extracted text is returned by that
+endpoint. Upload still appends a résumé record; Replace selects the latest version
+without changing profile fields or deleting history. Corrupt/type/size/page and
+network errors remain concise. Latest-file loading cannot overwrite a newer
+upload response. Raw document contents are never rendered or retained in UI state.
+
+`JobDetailsDrawer` loads `/api/jobs/{id}/details`, renders plain escaped description
+text and available keyword groups, and reuses shared actions. Provenance is a
+quiet Listed by line with repository links near the bottom. Source/canonical IDs,
+match methods/confidence, and parsing/reconciliation terminology are absent.
+Loading/error/retry and missing-description states preserve context.
+
+All listings keeps the source update workflow through a quiet Update listings
+control and short status line. It calls the existing sync APIs and reloads after
+completion. No operational dashboard or backend diagnostics are exposed.
+
+## Implementation inventory
 
 | File | Purpose |
 | --- | --- |
-| `frontend/package.json` | React/build/font dependencies and dev/build/test scripts. |
-| `frontend/package-lock.json` | Reproducible dependency versions. |
-| `frontend/tsconfig.json` | Strict TypeScript and JSX configuration. |
-| `frontend/vite.config.ts` | React build base and same-origin development proxies. |
-| `frontend/index.html` | Profile HTML entry. |
-| `frontend/src/main.tsx` | React bootstrap, local fonts, and stylesheet. |
-| `frontend/src/App.tsx` | Profile/recommendation pathname selection and navigation. |
-| `frontend/src/types/profile.ts` | Profile, draft, pending-tag, and résumé metadata types. |
-| `frontend/src/types/jobs.ts` | Canonical jobs, recommendations, events, and effective state. |
-| `frontend/src/api/http.ts` | Central JSON requests and typed HTTP errors. |
-| `frontend/src/api/profile.ts` | GET/PUT profile requests. |
-| `frontend/src/api/resumes.ts` | Multipart PDF upload, returning metadata only. |
-| `frontend/src/api/recommendations.ts` | Read scored jobs from the matching API. |
-| `frontend/src/api/interactions.ts` | Read state and append interaction events. |
-| `frontend/src/lib/form.ts` | Tag operations, editable payload construction, and input validation. |
-| `frontend/src/lib/form.test.ts` | Built-in Node tests for the pure form/file helpers. |
-| `frontend/src/lib/workflow.ts` | Confirmed-state merging, dismiss presentation, and safe application URLs. |
-| `frontend/src/lib/workflow.test.ts` | State/event, API payload, and navigation-URL tests. |
-| `frontend/src/components/TopNav.tsx` | Feed/Profile navigation. |
-| `frontend/src/components/TagInput.tsx` | Labelled chip editing and keyboard behavior. |
-| `frontend/src/components/ProfileForm.tsx` | Draft, dirty state, full PUT, and save/error states. |
-| `frontend/src/components/ResumeUpload.tsx` | Session upload state and safe error messages. |
-| `frontend/src/components/RecommendationCard.tsx` | Job/score hierarchy and accessible action controls. |
-| `frontend/src/pages/ProfilePage.tsx` | Loading/retry, composition, and request cancellation. |
-| `frontend/src/pages/JobCollectionPage.tsx` | Reused Recommended/Saved/Applied screen, server snapshots, confirmed actions, and refresh restoration. |
-| `frontend/src/styles.css` | Design tokens, layout, controls, focus, and mobile styles. |
-| `internshipfeed/api.py` | API endpoints and compiled frontend HTML/assets serving. |
-| `internshipfeed/db.py` | Append events and project candidate state across merged job IDs. |
-| `internshipfeed/models.py` | Explicit event-request, event-response, and state-response contracts. |
-| `index.html` | Adds navigation to the existing feed. |
-| `web/styles.css` | Styles that small feed navigation bar. |
-| `.gitignore` | Excludes Node modules and generated build artifacts. |
-| `scripts/check_profile_ui.py` | Actual profile/browser checks plus bounded error fixtures. |
-| `scripts/check_recommendations_ui.py` | Isolated PostgreSQL/browser workflow and regression checks. |
-| `README.md`, `docs/database.md`, `docs/frontend.md` | Setup and implemented architecture. |
+| `index.html` (frontend) | Shared HTML entry and product description. |
+| `src/App.tsx` | View selection, drawers, shared workflow and refresh boundary. |
+| `src/components/TopNav.tsx` | Four destinations plus Profile dialog trigger. |
+| `src/components/Drawer.tsx` | Native dialog, focus handling, close/context behavior. |
+| `src/components/ProfileDrawer.tsx` | Profile loading/retry and form/upload composition. |
+| `src/components/ProfileForm.tsx` | Existing tag/preferences form, explicit save callback. |
+| `src/components/TagInput.tsx` | Editable shared tags and Enter/removal behavior. |
+| `src/components/ResumeUpload.tsx` | Compact upload/replace and persistent latest metadata. |
+| `src/components/RecommendationCard.tsx` | Rich shared Recommended/Saved/Applied card. |
+| `src/components/MatchSummary.tsx` | Compact explanation and expanded backend scores. |
+| `src/components/JobActions.tsx` | Consistent native Apply and confirmed utilities. |
+| `src/components/SkillTag.tsx` | Shared technical tag and optional removal button. |
+| `src/components/Icon.tsx` | One SVG icon vocabulary. |
+| `src/components/JobDetailsDrawer.tsx` | Metadata, description, keywords, actions, provenance. |
+| `src/components/FilterBar.tsx` | Compact accessible directory controls. |
+| `src/components/SyncControl.tsx` | Existing source-update workflow and status. |
+| `src/pages/JobCollectionPage.tsx` | Three scored server collections. |
+| `src/pages/ListingsPage.tsx` | React directory, filtering, details, actions. |
+| `src/hooks/useJobActions.ts` | Shared pending/confirmed snapshot handling. |
+| `src/lib/listings.ts`, `src/lib/navigation.ts` | Directory filter and route helpers. |
+| `src/api/jobs.ts`, `src/api/resumes.ts` | Job/source/sync and latest-file API functions. |
+| `src/types/jobs.ts` | Details, source, keywords, and sync response types. |
+| `src/styles/tokens.css`, `src/styles.css` | Design tokens and complete shared styles. |
+| `vite.config.ts` | UI routes handled locally, API-only proxy. |
+| `src/lib/product.test.ts` | Navigation/filter/tag/action contracts. |
+| `src/lib/recommendation-card.test.ts` | Profile/final score presentation and response fixture. |
+
+`ProfilePage.tsx` and `web/styles.css` were removed. Root `index.html` and
+`web/app.js` are tiny compatibility redirects for cached older pages, with no
+legacy product UI. Backend `api.py` serves all views and attaches existing
+term/keyword metadata to collection cards; `models.py` defines those additions
+and a metadata-only résumé contract; `db.py` adds the latest metadata lookup.
+Base profile scoring and authentication remain unchanged. Reversible Save/Applied
+actions use migration `008_reversible_interactions.sql` to extend the existing
+event-type constraint; all workflow state remains derived from event history.
+
+`scripts/check_profile_ui.py`, `scripts/check_ui.py`, and
+`scripts/check_recommendations_ui.py` exercise the consolidated surfaces.
+`tests/test_database.py` adds metadata privacy/isolation and shared-page/missing-
+build checks, using a temporary HTML fixture so backend tests do not depend on
+ignored frontend build output. `README.md`, `docs/database.md`, and
+`docs/interactions.md` update the entry points, API, and workflow documentation.
 
 ## Verification
 
 ```sh
+.venv/bin/python scripts/test_with_existing_postgres.py
 npm --prefix frontend test
 npm --prefix frontend run build
-.venv/bin/python scripts/test_with_existing_postgres.py
-.venv/bin/python scripts/check_recommendations_ui.py --browser-executable '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'
-.venv/bin/python scripts/check_profile_ui.py --url http://127.0.0.1:8000 --browser-executable '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'
-.venv/bin/python scripts/check_ui.py --url http://127.0.0.1:8000 --browser-executable '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'
+.venv/bin/python scripts/check_recommendations_ui.py
 ```
 
-Omit `--browser-executable` if Playwright's Chromium is installed. The profile
-check writes an example profile through the UI, verifies refresh persistence,
-and restores original editable values in `finally`. As with any profile update,
-the database trigger advances `updated_at`. It uploads **one generated PDF**,
-which remains in development résumé history; it does not delete existing data.
-Other upload retries/failures use browser fixtures to avoid additional records.
+The browser script accepts `--browser-executable /path/to/chromium` and uses an
+isolated schema on the existing PostgreSQL server plus a temporary API process.
+It checks home/navigation, shared drawer/card actions, Saved/Applied combinations,
+refresh persistence, known behavioral ordering, errors/retries, click/new-tab
+safety, profile edits/validation, real PDF extraction, latest-file restoration,
+directory filters/search/details/update progress, keyboard trapping/restoration,
+Escape, and desktop/narrow widths. External application URLs are intercepted
+locally; sync progress is simulated without starting external scraping. Fixture
+schemas/processes are removed and live candidate history is untouched.
 
-Checks cover initial values, all tag fields, duplicate prevention, removal,
-pending input on save, graduation validation, successful PDF upload, DOCX and
-corrupt-PDF rejection, safe load/save/upload error states, retries, mobile overflow,
-and feed navigation. Screenshots are written under ignored `data/screenshots`.
-The separate existing feed check covers filters, job details, search, refresh,
-mobile layout, and sync progress. No UI test starts real source ingestion.
-
-The product workflow script initializes an isolated schema on the existing
-PostgreSQL server, seeds a development profile and four fixture jobs, and starts a
-temporary FastAPI process. It confirms save/click/dismiss/applied rows directly in
-PostgreSQL, persistence across all three screens and repeated refreshes, combined
-Saved/Applied and Saved/Dismissed precedence, application timestamps, confirmed-only
-UI changes, error handling, unchanged scores, and 390/320 px layouts. A reserved fixture application URL opens
-in a real new tab; its page is intercepted locally to avoid external employer
-requests. The script then runs the existing profile and feed checks in that same
-schema and removes its server/schema, preserving live candidate history.
+Screenshots are written to ignored `data/screenshots`: Recommended, Saved,
+Applied, profile, directory, and details, at desktop/mobile widths. The reference
+screenshots mentioned in the brief were not included in the attachment; the
+written hierarchy/tag guidance and existing product typography supplied the design.
+Physical devices, Firefox/Safari, and screen-reader announcement quality have not
+been manually tested.

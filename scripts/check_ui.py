@@ -1,63 +1,90 @@
-"""Browser smoke check for the combined, database-backed jobs feed."""
+"""Browser checks for the React directory and shared job-details drawer."""
 import argparse
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--url', default='http://127.0.0.1:8000')
 parser.add_argument('--browser-executable')
 args = parser.parse_args()
-
+base = args.url.rstrip('/')
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(executable_path=args.browser_executable, headless=True)
-    page = browser.new_page(viewport={'width': 1280, 'height': 900})
+    page = browser.new_page(viewport={'width': 1280, 'height': 1000})
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
-    # Keep a real background sync from consuming the progress fixture below.
     page.route('**/api/ingestion-batches/latest', lambda route: route.fulfill(json=None))
-    page.goto(args.url)
+    page.goto(base + '/listings')
+    expect(page.get_by_role('heading', name='All listings', exact=True)).to_be_visible()
     page.wait_for_function("document.querySelector('#summary').textContent.includes(' of ')")
-    page.wait_for_function("document.querySelector('#source').options.length === 3")
-    entries = page.request.get(args.url + '/api/feed').json()
-    saved = [entry['job'] for entry in entries]
-    canonical = page.request.get(args.url + '/api/jobs').json()
+    page.wait_for_function("document.querySelector('#source').options.length > 1")
+    entries = page.request.get(base + '/api/feed').json()
+    canonical = page.request.get(base + '/api/jobs').json()
     assert all(set(job) == {'id', 'company', 'title', 'location', 'application_url', 'posted_at', 'status'} for job in canonical)
-    sources = page.request.get(args.url + '/api/sources').json()
-    all_count = len(saved)
-    assert page.locator('#jobs tr').count() == all_count > 0
-    assert not any(job['status'] in {'closed', 'dead'} for job in saved)
+    sources = page.request.get(base + '/api/sources').json()
+    count = len(entries)
+    expect(page.locator('.listing-row')).to_have_count(min(count, 40))
+    assert count > 0 and not any(entry['job']['status'] in {'closed', 'dead'} for entry in entries)
     for source in sources:
         page.select_option('#source', str(source['id']))
-        expected = sum(any(record['source_id'] == source['id'] and record['status'] not in {'closed', 'dead'} for record in entry['sources']) for entry in entries)
-        assert page.locator('#jobs tr').count() == expected
-    page.select_option('#source', 'all')
+        expected = sum(any(row['source_id'] == source['id'] and row['status'] not in {'closed', 'dead'} for row in entry['sources']) for entry in entries)
+        expect(page.locator('.listing-row')).to_have_count(min(expected, 40))
+    page.select_option('#source', '')
     page.select_option('#status', 'open')
-    assert all(text == 'open' for text in page.locator('#jobs .badge').all_text_contents())
-    page.select_option('#status', 'all')
-    sample = saved[0]
-    page.fill('#search', sample['title'])
-    page.get_by_role('button', name=sample['title'], exact=True).first.click()
-    page.get_by_role('heading', name='Job description', exact=True).wait_for()
-    assert page.locator('#detail-content a').first.get_attribute('href') == entries[0]['sources'][0]['source']
-    page.keyboard.press('Escape')
-    page.fill('#search', 'no-such-company-1234567')
-    assert page.locator('#message').is_visible()
-    assert page.locator('#jobs tr').count() == 0
-    page.fill('#search', '')
-    page.get_by_role('button', name='Refresh', exact=True).click()
-    page.wait_for_function("!document.querySelector('#reload').disabled")
-    assert page.locator('#jobs tr').count() == all_count
+    expect(page.locator('.listing-row')).to_have_count(min(sum(entry['job']['status'] == 'open' for entry in entries), 40))
+    page.select_option('#status', '')
+    sample = next((entry for entry in entries if entry['description'] and any(entry['keywords'].values())), entries[0])
+    page.get_by_label('Location', exact=True).select_option(sample['job']['location'])
+    expect(page.locator('.listing-row')).to_have_count(min(sum(entry['job']['location'] == sample['job']['location'] for entry in entries), 40))
+    page.get_by_label('Location', exact=True).select_option('')
+    if sample['term']:
+        page.get_by_label('Term', exact=True).select_option(sample['term'])
+        expect(page.locator('.listing-row')).to_have_count(min(sum(entry['term'] == sample['term'] for entry in entries), 40))
+        page.get_by_label('Term', exact=True).select_option('')
+    page.fill('#search', sample['job']['title'])
+    title = page.get_by_role('button', name=sample['job']['title'], exact=True).first
+    detail_path = '**/api/jobs/%s/details' % sample['job']['id']
+    page.route(detail_path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
+    title.click()
+    dialog = page.get_by_role('dialog')
+    expect(dialog).to_be_visible()
+    expect(dialog.get_by_text('Could not load this job.', exact=True)).to_be_visible()
+    page.unroute(detail_path)
+    dialog.get_by_role('button', name='Try again', exact=True).click()
+    expect(dialog.locator('.job-description')).to_be_visible()
+    expect(dialog.locator('.provenance')).to_contain_text('Listed by')
+    assert dialog.locator('.provenance a').first.get_attribute('href') in [row['source'] for row in sample['sources']]
+    assert not any(word in dialog.inner_text().lower() for word in ('canonical job', 'external_id', 'match_confidence', 'reconciliation', 'source posting'))
+    for _ in range(15):
+        page.keyboard.press('Tab')
+        assert page.evaluate("Boolean(document.activeElement.closest('dialog[open]'))")
     screenshots = Path('data/screenshots')
     screenshots.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(screenshots / 'jobs-desktop.png'))
-    page.set_viewport_size({'width': 390, 'height': 844})
-    page.fill('#search', sample['title'])
-    page.get_by_role('button', name=sample['title'], exact=True).first.click()
-    page.get_by_role('heading', name='Job description', exact=True).wait_for()
-    page.screenshot(path=str(screenshots / 'job-mobile.png'))
+    page.screenshot(path=str(screenshots / 'details-desktop.png'))
     page.keyboard.press('Escape')
-    # Browser-local progress fixture; does not start external scraping or mutate jobs.
-    run = {'id': '00000000-0000-0000-0000-000000000001', 'status': 'running', 'scraped': 2, 'processed': 0, 'inserted': 0, 'updated': 0, 'skipped_duplicates': 0, 'failed': 0, 'current_source': 'Simplify Internships'}
+    expect(dialog).to_have_count(0)
+    expect(title).to_be_focused()
+    expect(page.locator('#search')).to_have_value(sample['job']['title'])
+    title.click()
+    expect(dialog).to_be_visible()
+    page.mouse.click(20, 120)  # Backdrop, outside the right-side drawer.
+    expect(dialog).to_have_count(0)
+    page.fill('#search', 'no-such-company-1234567')
+    expect(page.get_by_text('No listings match these filters.', exact=True)).to_be_visible()
+    page.fill('#search', '')
+    page.get_by_role('button', name='Refresh', exact=True).click()
+    expect(page.locator('.listing-row')).to_have_count(min(count, 40))
+    page.screenshot(path=str(screenshots / 'listings-desktop.png'), full_page=True)
+    page.set_viewport_size({'width': 390, 'height': 844})
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=str(screenshots / 'listings-mobile.png'), full_page=True)
+    page.fill('#search', sample['job']['title'])
+    page.get_by_role('button', name=sample['job']['title'], exact=True).first.click()
+    expect(page.get_by_role('dialog').locator('.job-description')).to_be_visible()
+    page.screenshot(path=str(screenshots / 'details-mobile.png'))
+    assert page.get_by_role('dialog').evaluate('(node) => node.scrollWidth <= node.clientWidth')
+    page.keyboard.press('Escape')
+    run = {'id': '00000000-0000-0000-0000-000000000001', 'status': 'running', 'scraped': 2, 'processed': 0}
     polls = [0]
     def progress(route):
         polls[0] += 1
@@ -66,9 +93,16 @@ with sync_playwright() as playwright:
     page.unroute('**/api/ingestion-batches/latest')
     page.route('**/api/ingestion-batches/latest', progress)
     page.locator('#sync-jobs').click()
-    page.wait_for_function("document.querySelector('#sync-status').textContent.startsWith('Processing ')")
-    page.wait_for_function("document.querySelector('#sync-status').textContent === 'Sync complete.'")
-    assert not page.locator('#sync-jobs').is_disabled()
+    expect(page.locator('#sync-status')).to_have_text('Updating listings…')
+    expect(page.locator('#sync-status')).to_have_text('Listings updated.', timeout=10000)
+    expect(page.locator('#sync-jobs')).to_be_enabled()
+    page.route('**/api/feed', lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
+    page.get_by_role('button', name='Refresh', exact=True).click()
+    expect(page.get_by_text('Could not load listings.', exact=True)).to_be_visible()
+    expect(page.locator('.listing-row')).to_have_count(0)
+    page.unroute('**/api/feed')
+    page.get_by_role('button', name='Try again', exact=True).click()
+    expect(page.locator('.listing-row').first).to_be_visible()
     assert not errors, errors
     browser.close()
-    print('Browser checks passed: combined feed, source/status filters, details, search, refresh, mobile layout, and sync progress; %s jobs' % all_count)
+    print('React directory checks passed: filters, search, shared details, safe provenance, native focus trap/restore, Escape, refresh, error/retry, mobile, and simulated update progress; %s jobs.' % count)

@@ -8,7 +8,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import psycopg
 from fastapi.testclient import TestClient
@@ -23,11 +23,15 @@ from internshipfeed.resumes import MAX_PDF_PAGES, MAX_UPLOAD_BYTES
 from pdf_fixtures import make_pdf
 
 SOURCE_URL = CANADIAN.url
-from internshipfeed.models import JobKeywords
+from internshipfeed.models import JobKeywords, MatchResult
 from internshipfeed.normalize import normalize
 from internshipfeed.source import parse_readme
 
 FIXTURE = Path(__file__).parent / "fixtures" / "listings.md"
+
+
+def profile_fit(result):
+    return {key: result[key] for key in MatchResult.model_fields}
 
 
 @unittest.skipUnless(os.environ.get("TEST_DATABASE_URL"), "Set TEST_DATABASE_URL or run scripts/test_with_postgres.py")
@@ -60,6 +64,14 @@ class DatabaseTests(unittest.TestCase):
 
     def save(self, job):
         return db.save_job(self.conn, self.prepare(job))
+
+    def frontend_entry(self):
+        # Backend route tests must not depend on ignored local frontend builds.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        entry = Path(directory.name) / 'index.html'
+        entry.write_text('<div id="root"></div><script src="/profile/assets/app.js"></script>')
+        return entry
 
     def tearDown(self):
         app.dependency_overrides.clear()
@@ -115,7 +127,7 @@ class DatabaseTests(unittest.TestCase):
             with self.connect() as conn:
                 yield conn
         app.dependency_overrides[connection] = test_connection
-        with patch("internshipfeed.api.db.connect", side_effect=self.connect), TestClient(app) as client:
+        with patch("internshipfeed.api.FRONTEND_ENTRY", self.frontend_entry()), patch("internshipfeed.api.db.connect", side_effect=self.connect), TestClient(app) as client:
             response = client.get("/api/jobs")
             self.assertEqual(response.status_code, 200)
             data = response.json()
@@ -139,6 +151,38 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/web/app.js").status_code, 200)
             self.assertEqual(client.get("/data/jobs.json").status_code, 404)
+
+    def test_latest_resume_returns_only_candidate_scoped_metadata(self):
+        candidate = db.development_profile(self.conn)['id']
+        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        db.save_resume_text(self.conn, other, 'other.pdf', 'Private other candidate text')
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertIsNone(client.get('/api/resumes/latest').json())
+            db.save_resume_text(self.conn, candidate, 'first.pdf', 'Private candidate text')
+            latest = db.save_resume_text(self.conn, candidate, 'latest.pdf', 'Private candidate text')
+            response = client.get('/api/resumes/latest')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(set(response.json()), {'id', 'candidate_profile_id', 'filename', 'uploaded_at'})
+            self.assertEqual(response.json()['id'], latest['id'])
+            self.assertNotIn('Private', response.text)
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual(client.get('/api/resumes/latest').json()['filename'], 'latest.pdf')
+
+    def test_all_product_routes_serve_the_shared_react_app(self):
+        with patch('internshipfeed.api.FRONTEND_ENTRY', self.frontend_entry()), patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for path in ('/', '/recommendations', '/listings', '/feed', '/saved', '/applied', '/profile', '/listings/'):
+                response = client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('/profile/assets/', response.text)
+                self.assertNotIn('id="jobs"', response.text)
+
+    def test_missing_frontend_build_returns_clean_503(self):
+        missing = self.frontend_entry().parent / 'missing.html'
+        with patch('internshipfeed.api.FRONTEND_ENTRY', missing), patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for path in ('/', '/listings', '/profile', '/saved', '/applied'):
+                response = client.get(path)
+                self.assertEqual(response.status_code, 503)
+                self.assertIn('Build the frontend first.', response.json()['detail'])
 
     def test_ingestion_counts_and_persistent_reports(self):
         original_connect = db.connect
@@ -625,15 +669,111 @@ class DatabaseTests(unittest.TestCase):
             db.save_resume_text(self.conn, candidate_id, 'resume.pdf', 'Product management, Toronto, Summer 2027, Python')
             self.assertEqual(client.get('/api/recommendations').json(), backend)
             db.record_interaction(self.conn, candidate_id, backend[0]['job']['id'], 'dismiss')
-            self.assertEqual(client.get('/api/recommendations').json(), backend[1:])
+            remaining = client.get('/api/recommendations').json()
+            self.assertEqual([profile_fit(row) for row in remaining], [profile_fit(row) for row in backend[1:]])
             from internshipfeed.matching import score_job
             from internshipfeed.models import CandidateProfile
             fit = score_job(CandidateProfile.model_validate(db.development_profile(self.conn)), db.get_job_details(self.conn, backend[0]['job']['id']))
-            self.assertEqual(fit.model_dump(mode='json'), {key: value for key, value in backend[0].items() if key != 'interaction_state'})
+            self.assertEqual(fit.model_dump(mode='json'), profile_fit(backend[0]))
             client.put('/api/profile', json=dict(empty, target_roles=['Product Management']))
             product = client.get('/api/recommendations').json()
             self.assertEqual(product[0]['job']['title'], 'Product Management Intern')
             self.assertEqual([row['score'] for row in product], [40])
+
+    def test_behavior_history_bulk_loads_deduplicated_merged_candidate_evidence(self):
+        from internshipfeed.behavioral import build_behavior_profile
+        candidate = db.development_profile(self.conn)['id']
+        ids, records = [], []
+        for index in range(3):
+            record = self.job.model_copy(update={'external_id': 'behavior-' + str(index), 'url': 'https://example.com/behavior/' + str(index),
+                                                 'title': 'Backend Engineer Intern', 'keywords': JobKeywords(languages=['Python'])})
+            self.save(record)
+            records.append(record)
+            ids.append(db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id)
+        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        db.record_interaction(self.conn, other, ids[2], 'dismiss')
+        for job_id, actions in ((ids[0], ('save', 'click')), (ids[1], ('save', 'save', 'applied')), (ids[2], ('view',))):
+            for action in actions:
+                db.record_interaction(self.conn, candidate, job_id, action)
+        # A merge must cap repeated signals across historical aliases too.
+        self.save(records[1].model_copy(update={'resolved_url': records[0].url, 'enrichment_status': 'success', 'description': 'Readable job'}))
+        # Closed observations remain valid preference evidence.
+        self.save(records[0].model_copy(update={'status': 'closed', 'url': None}))
+        self.save(records[1].model_copy(update={'status': 'closed', 'url': None, 'resolved_url': records[0].url,
+                                               'enrichment_status': 'success'}))
+        monitored = Mock(wraps=self.conn)
+        history = db.behavior_history(monitored, candidate)
+        self.assertEqual(monitored.execute.call_count, 3)  # grouped history + bulk jobs + bulk observations
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].details.job.id, ids[0])
+        self.assertEqual(history[0].details.job.status, 'closed')
+        self.assertEqual(history[0].interaction_types, frozenset({'save', 'click', 'applied'}))
+        learned = build_behavior_profile(history)
+        self.assertEqual(learned.roles, {'backend engineering': 7})
+        self.assertEqual(learned.skills, {'python': 7})
+        self.assertEqual(db.behavior_history(self.conn, other)[0].interaction_types, frozenset({'dismiss'}))
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 7)
+
+    def test_recommendations_personalize_order_from_persisted_history_without_changing_fit_or_feed(self):
+        ids, records = [], []
+        for index, title in enumerate(('Backend Software Engineer Intern', 'Backend Software Engineer Intern', 'Frontend Software Engineer Intern')):
+            record = self.job.model_copy(update={'external_id': 'rank-' + str(index), 'url': 'https://example.com/rank/' + str(index),
+                                                 'title': title, 'keywords': JobKeywords(languages=['Python', 'SQL']), 'term': 'Summer 2027'})
+            self.save(record)
+            records.append(record)
+            ids.append(db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id)
+        history, backend, frontend = ids
+        candidate = db.development_profile(self.conn)['id']
+        before_jobs = self.conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall()
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            client.put('/api/profile', json={'target_roles': ['Software Engineering'], 'skills': [], 'preferred_locations': [],
+                                            'preferred_terms': [], 'graduation_year': None})
+            original = client.get('/api/recommendations').json()
+            self.assertEqual([row['job']['id'] for row in original], [frontend, backend, history])
+            self.assertTrue(all((row['score'], row['profile_score'], row['behavior_score'], row['final_score']) == (40, 40, 50, 43) for row in original))
+            for action in ('save', 'applied'):
+                self.assertEqual(client.post('/api/jobs/%s/interactions' % history, json={'type': action}).status_code, 201)
+            ranked = client.get('/api/recommendations').json()
+            self.assertEqual([row['job']['id'] for row in ranked], [backend, frontend])
+            self.assertGreater(ranked[0]['behavior_score'], ranked[1]['behavior_score'])
+            self.assertGreater(ranked[0]['final_score'], ranked[1]['final_score'])
+            self.assertEqual(len(ranked[0]['behavior_reasons']), 2)
+            for row in ranked:
+                old = next(item for item in original if item['job']['id'] == row['job']['id'])
+                self.assertEqual(profile_fit(row), profile_fit(old))
+                self.assertEqual(row['score'], row['profile_score'])
+            for _ in range(3):
+                for action in ('save', 'applied'):
+                    client.post('/api/jobs/%s/interactions' % history, json={'type': action})
+            self.assertEqual(client.get('/api/recommendations').json(), ranked)
+            self.assertEqual([row['job']['id'] for row in client.get('/api/feed').json()], [frontend, backend])
+            for path in ('/api/saved', '/api/applied'):
+                self.assertEqual(client.get(path).json()[0]['job']['id'], history)
+                self.assertNotIn('final_score', client.get(path).json()[0])
+            other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+            db.record_interaction(self.conn, other, frontend, 'applied')
+            db.record_interaction(self.conn, candidate, backend, 'view')
+            # View only changes the state timestamp/cursor, never ranking signals.
+            after_view = client.get('/api/recommendations').json()
+            self.assertEqual([{key: value for key, value in row.items() if key != 'interaction_state'} for row in after_view],
+                             [{key: value for key, value in row.items() if key != 'interaction_state'} for row in ranked])
+            client.post('/api/jobs/%s/interactions' % backend, json={'type': 'dismiss'})
+            self.assertEqual([row['job']['id'] for row in client.get('/api/recommendations').json()], [frontend])
+        # Fresh connections rebuild preferences, while excluded jobs stay excluded.
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual([row['job']['id'] for row in client.get('/api/recommendations').json()], [frontend])
+        self.assertEqual(self.conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall(), before_jobs)
+
+    def test_behavior_history_keeps_unlinked_metadata_without_materializing_preferences(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        candidate = db.development_profile(self.conn)['id']
+        db.record_interaction(self.conn, candidate, job_id, 'applied')
+        self.save(self.job.model_copy(update={'url': 'https://example.com/corrected-url'}))
+        history = db.behavior_history(self.conn, candidate)
+        self.assertEqual([entry.details.job.id for entry in history], [job_id])
+        self.assertEqual(history[0].details.sources, [])
+        self.assertEqual(db.behavior_history(self.conn, 999999), [])
 
     def test_recommendations_empty_dataset_and_min_score_validation(self):
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
@@ -675,6 +815,104 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 5)
         self.assertEqual(self.conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall(), before_jobs)
         self.assertEqual(db.development_profile(self.conn), candidate)
+
+    def test_save_and_applied_reversals_restore_collections_and_survive_refresh(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        before = self.conn.execute('SELECT * FROM canonical_jobs').fetchall()
+        sequence = [('save', True, False), ('applied', True, True), ('unsave', False, True),
+                    ('unapplied', False, False), ('save', True, False), ('applied', True, True),
+                    ('unapplied', True, False), ('unsave', False, False), ('unsave', False, False), ('unapplied', False, False)]
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for action, saved, applied in sequence:
+                response = client.post('/api/jobs/%s/interactions' % job_id, json={'type': action})
+                self.assertEqual(response.status_code, 201)
+                state = response.json()['interaction_state']
+                self.assertEqual((state['saved'], state['applied']), (saved, applied))
+                self.assertEqual(state['saved_at'] is not None, saved)
+                self.assertEqual(state['applied_at'] is not None, applied)
+                self.assertEqual(len(client.get('/api/saved').json()), int(saved))
+                self.assertEqual(len(client.get('/api/applied').json()), int(applied))
+                self.assertEqual(len(client.get('/api/recommendations').json()), int(not applied))
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            state = client.get('/api/interactions').json()[0]
+            self.assertFalse(state['saved'] or state['applied'])
+            self.assertEqual(client.get('/api/saved').json(), [])
+            self.assertEqual(client.get('/api/applied').json(), [])
+            self.assertEqual(client.get('/api/recommendations').json()[0]['job']['id'], job_id)
+        self.assertEqual([row['interaction_type'] for row in self.conn.execute('SELECT * FROM job_interactions ORDER BY id')], [item[0] for item in sequence])
+        self.assertEqual(self.conn.execute('SELECT * FROM canonical_jobs').fetchall(), before)
+
+    def test_reversals_remove_behavior_signals_without_repeated_toggle_inflation(self):
+        from internshipfeed.behavioral import build_behavior_profile
+        self.save(self.job.model_copy(update={'title': 'Backend Engineer Intern'}))
+        job_id = db.list_jobs(self.conn)[0].id
+        candidate = db.development_profile(self.conn)['id']
+        for action, expected in (('click', 1), ('save', 3), ('applied', 7), ('unsave', 5), ('unapplied', 1),
+                                 ('save', 3), ('applied', 7), ('save', 7)):
+            db.record_interaction(self.conn, candidate, job_id, action)
+            learned = build_behavior_profile(db.behavior_history(self.conn, candidate))
+            self.assertEqual(learned.roles['backend engineering'], expected)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 8)
+
+    def test_reversals_follow_merged_identities_and_remain_candidate_scoped(self):
+        records = [self.job.model_copy(update={'external_id': str(index), 'url': 'https://example.com/reversal/' + str(index)}) for index in range(2)]
+        for record in records:
+            self.save(record)
+        a, b = [db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id for record in records]
+        candidate = db.development_profile(self.conn)['id']
+        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        old = db.record_interaction(self.conn, candidate, b, 'save')
+        db.record_interaction(self.conn, candidate, a, 'applied')
+        db.record_interaction(self.conn, candidate, a, 'unsave')
+        db.record_interaction(self.conn, candidate, b, 'unapplied')
+        db.record_interaction(self.conn, other, a, 'save')
+        self.save(records[1].model_copy(update={'resolved_url': records[0].url, 'description': 'Verified posting', 'enrichment_status': 'success'}))
+        state = db.interaction_states(self.conn, candidate)[0]
+        self.assertEqual(state['job_id'], a)
+        self.assertFalse(state['saved'] or state['applied'])
+        self.assertEqual(db.behavior_history(self.conn, candidate), [])
+        self.assertTrue(db.interaction_states(self.conn, other)[0]['saved'])
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            response = client.post('/api/jobs/%s/interactions' % b, json={'type': 'save'})
+            self.assertEqual(response.json()['canonical_job_id'], a)
+            self.assertTrue(response.json()['interaction_state']['saved'])
+        self.assertEqual(self.conn.execute('SELECT canonical_job_id FROM job_interactions WHERE id=%s', (old['id'],)).fetchone()['canonical_job_id'], b)
+
+    def test_latest_event_id_decides_state_even_when_timestamps_tie_or_move_backwards(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        candidate = db.development_profile(self.conn)['id']
+        first = db.record_interaction(self.conn, candidate, job_id, 'save')
+        self.conn.execute("UPDATE job_interactions SET created_at='2026-11-10T12:00:00Z' WHERE id=%s", (first['id'],))
+        undone = db.record_interaction(self.conn, candidate, job_id, 'unsave')
+        self.conn.execute("UPDATE job_interactions SET created_at='2026-11-01T12:00:00Z' WHERE id=%s", (undone['id'],))
+        state = db.interaction_states(self.conn, candidate)[0]
+        self.assertFalse(state['saved'])
+        self.assertIsNone(state['saved_at'])
+        restored = db.record_interaction(self.conn, candidate, job_id, 'save')
+        self.conn.execute("UPDATE job_interactions SET created_at='2026-11-01T12:00:00Z' WHERE id=%s", (restored['id'],))
+        state = db.interaction_states(self.conn, candidate)[0]
+        self.assertTrue(state['saved'])
+        self.assertEqual(state['saved_at'].day, 1)
+        self.assertEqual(state['last_interaction_at'].day, 10)
+        self.assertEqual(state['last_event_id'], restored['id'])
+
+    def test_reversible_interaction_migration_preserves_existing_history_and_constraints(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        candidate = db.development_profile(self.conn)['id']
+        event = db.record_interaction(self.conn, candidate, job_id, 'save')
+        self.conn.execute('ALTER TABLE job_interactions DROP CONSTRAINT job_interactions_interaction_type_check')
+        self.conn.execute("ALTER TABLE job_interactions ADD CONSTRAINT job_interactions_interaction_type_check CHECK (interaction_type IN ('view','click','save','dismiss','applied'))")
+        self.conn.execute("DELETE FROM schema_migrations WHERE version='008_reversible_interactions.sql'")
+        db.initialize(self.conn)
+        db.initialize(self.conn)
+        self.assertEqual(self.conn.execute('SELECT * FROM job_interactions WHERE id=%s', (event['id'],)).fetchone(), event)
+        db.record_interaction(self.conn, candidate, job_id, 'unsave')
+        self.assertFalse(db.interaction_states(self.conn, candidate)[0]['saved'])
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            db.record_interaction(self.conn, candidate, job_id, 'invalid')
 
     def test_click_and_internal_view_do_not_imply_saved_or_applied(self):
         self.save(self.job)
@@ -764,8 +1002,7 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(client.post('/api/jobs/%s/interactions' % job_id, json={'type': action}).status_code, 201)
             self.assertEqual(client.get('/api/recommendations').json(), [])
             applied = client.get('/api/applied').json()
-            self.assertEqual([{key: value for key, value in row.items() if key != 'interaction_state'} for row in applied],
-                             [{key: value for key, value in row.items() if key != 'interaction_state'} for row in before])
+            self.assertEqual([profile_fit(row) for row in applied], [profile_fit(row) for row in before])
             self.assertEqual(client.get('/api/saved').json(), [])
             self.assertEqual(client.get('/api/jobs').json(), [])
             self.assertEqual(client.get('/api/feed').json(), [])

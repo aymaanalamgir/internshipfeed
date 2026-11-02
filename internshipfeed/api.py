@@ -1,4 +1,4 @@
-"""Database-backed API and the small static jobs UI."""
+"""Database-backed API and the consolidated React product."""
 import logging
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -12,13 +12,16 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db
 from .models import (CandidateJobView, CandidateProfile, CandidateProfileUpdate, CanonicalJob,
-                     InteractionReceipt, InteractionRequest, JobDetails, JobInteractionState, Resume)
-from .matching import rank_jobs, score_job
+                     InteractionReceipt, InteractionRequest, JobDetails, JobInteractionState, RecommendedJobView, Resume, ResumeMetadata)
+from .matching import score_job
+from .behavioral import build_behavior_profile
+from .recommendations import rank_recommendations
 from .resumes import MAX_UPLOAD_BYTES, ResumeExtractionError, extract_pdf_text
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
 
 logger = logging.getLogger(__name__)
+FRONTEND_ENTRY = db.ROOT / 'frontend' / 'dist' / 'index.html'
 @asynccontextmanager
 async def lifespan(app):
     try:
@@ -124,14 +127,21 @@ def _job_collection(conn, view, min_score=0):
     profile = CandidateProfile.model_validate(_development_candidate(conn))
     entries = db.candidate_job_details(conn, profile.id, view)
     details, states = [item for item, _ in entries], {item.job.id: state for item, state in entries}
-    matches = rank_jobs(profile, details, min_score=min_score) if view == 'recommended' else [score_job(profile, item) for item in details]
+    if view == 'recommended':
+        behavior = build_behavior_profile(db.behavior_history(conn, profile.id))
+        matches = rank_recommendations(profile, details, behavior, min_score=min_score)
+    else:
+        matches = [score_job(profile, item) for item in details]
     if view != 'recommended':
         field = 'saved_at' if view == 'saved' else 'applied_at'
         matches.sort(key=lambda match: (getattr(states[match.job.id], field).timestamp(), match.job.id), reverse=True)
-    return [CandidateJobView(**match.model_dump(), interaction_state=states[match.job.id]) for match in matches]
+    result_model = RecommendedJobView if view == 'recommended' else CandidateJobView
+    metadata = {item.job.id: item for item in details}
+    return [result_model(**match.model_dump(), interaction_state=states[match.job.id],
+                         term=metadata[match.job.id].term, keywords=metadata[match.job.id].keywords) for match in matches]
 
 
-@app.get("/api/recommendations", response_model=List[CandidateJobView])
+@app.get("/api/recommendations", response_model=List[RecommendedJobView])
 def recommendations(min_score: int = Query(default=0, ge=0, le=100), conn=Depends(connection)):
     return _job_collection(conn, 'recommended', min_score)
 
@@ -153,6 +163,11 @@ def update_profile(update: CandidateProfileUpdate, request: Request, conn=Depend
     if result is None:
         raise HTTPException(503, "Development profile is missing. Initialize the database before using profiles.")
     return result
+
+
+@app.get("/api/resumes/latest", response_model=Optional[ResumeMetadata])
+def latest_resume(conn=Depends(connection)):
+    return db.latest_resume_metadata(conn, _development_candidate(conn)['id'])
 
 
 @app.get("/api/interactions", response_model=List[JobInteractionState])
@@ -243,10 +258,9 @@ def health(conn=Depends(connection)):
 
 @app.get("/", include_in_schema=False)
 @app.get("/feed", include_in_schema=False)
-def index():
-    return FileResponse(db.ROOT / "index.html")
-
-
+@app.get("/feed/", include_in_schema=False)
+@app.get("/listings", include_in_schema=False)
+@app.get("/listings/", include_in_schema=False)
 @app.get("/profile", include_in_schema=False)
 @app.get("/profile/", include_in_schema=False)
 @app.get("/recommendations", include_in_schema=False)
@@ -256,10 +270,9 @@ def index():
 @app.get("/applied", include_in_schema=False)
 @app.get("/applied/", include_in_schema=False)
 def profile_page():
-    path = db.ROOT / 'frontend' / 'dist' / 'index.html'
-    if not path.is_file():
-        raise HTTPException(503, 'The profile interface is unavailable. Build the frontend first.')
-    return FileResponse(path)
+    if not FRONTEND_ENTRY.is_file():
+        raise HTTPException(503, 'The interface is unavailable. Build the frontend first.')
+    return FileResponse(FRONTEND_ENTRY)
 
 
 # Serve only UI assets; snapshots, .env, and data exports are not public routes.

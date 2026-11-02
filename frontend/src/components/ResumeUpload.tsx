@@ -1,8 +1,8 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { ResumeMetadata } from '../types/profile';
 import { ApiError } from '../api/http';
-import { uploadResume } from '../api/resumes';
+import { getLatestResume, uploadResume } from '../api/resumes';
 import { validatePdf } from '../lib/form';
 
 function uploadError(error: unknown): string {
@@ -22,6 +22,17 @@ export function ResumeUpload() {
   const [selectedName, setSelectedName] = useState('');
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const uploadVersion = useRef(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    const version = uploadVersion.current;
+    setLoadError(false);
+    getLatestResume(controller.signal).then(value => { if (!controller.signal.aborted && version === uploadVersion.current) setUploaded(value); })
+      .catch(() => { if (!controller.signal.aborted && version === uploadVersion.current) setLoadError(true); });
+    return () => controller.abort();
+  }, [attempt]);
 
   async function selected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -31,8 +42,13 @@ export function ResumeUpload() {
     setSelectedName(file.name);
     const validation = validatePdf(file);
     if (validation) { setError(validation); return; }
+    uploadVersion.current += 1;
     setUploading(true);
-    try { setUploaded(await uploadResume(file)); }
+    try {
+      const stored = await uploadResume(file);
+      setUploaded({ id: stored.id, candidate_profile_id: stored.candidate_profile_id, filename: stored.filename, uploaded_at: stored.uploaded_at });
+      setLoadError(false);
+    }
     catch (failure) { setError(uploadError(failure)); }
     finally { setUploading(false); }
   }
@@ -40,29 +56,25 @@ export function ResumeUpload() {
   return (
     <section className="resume-section" aria-labelledby="resume-label" aria-busy={uploading}>
       <div className="section-heading">
-        <h2 id="resume-label">Résumé</h2>
+        <h3 id="resume-label">Résumé</h3>
         <span>PDF only · 5 MiB · 10 pages</span>
       </div>
       <div className="resume-row">
-        <svg className="file-icon" viewBox="0 0 32 38" fill="none" aria-hidden="true">
-          <path d="M5 1h14l8 8v27H5V1Z" stroke="currentColor" strokeWidth="1.2" />
-          <path d="M19 1v9h8M10 19h12M10 24h12M10 29h8" stroke="currentColor" strokeWidth="1.2" />
-        </svg>
         <div className="resume-copy">
-          <p className="filename">{selectedName || uploaded?.filename || 'No PDF uploaded this session'}</p>
+          {(uploaded || selectedName) && <p className="filename">{uploading ? selectedName : uploaded?.filename || selectedName}</p>}
           <p className={error ? 'field-error' : uploaded && !uploading ? 'saved' : 'muted'}
             id="upload-status" role={error ? 'alert' : 'status'}>
-            {error || (uploading ? 'Uploading and reading PDF…' : uploaded ? 'Uploaded successfully' : 'Add a text-based résumé when you’re ready.')}
+            {error || (uploading ? 'Uploading…' : uploaded ? `Uploaded ${new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(new Date(uploaded.uploaded_at))}` : '')}
           </p>
         </div>
         <input ref={input} id="resume-file" type="file" accept=".pdf,application/pdf" className="sr-only"
           tabIndex={-1} disabled={uploading} onChange={selected} aria-label="Select résumé PDF" aria-describedby="upload-status" />
         <button type="button" className="button button-secondary" disabled={uploading} onClick={() => input.current?.click()}
           aria-describedby="upload-status">
-          <span aria-hidden="true">↑</span>{uploading ? 'Uploading…' : uploaded ? 'Upload another PDF' : 'Upload PDF'}
+          {uploading ? 'Uploading…' : uploaded ? 'Replace PDF' : 'Upload PDF'}
         </button>
       </div>
-      <p className="resume-note">Uploading a résumé won’t change your profile preferences.</p>
+      {loadError && <p className="field-error">Could not load résumé. <button type="button" className="text-button" onClick={() => setAttempt(value => value + 1)}>Try again</button></p>}
     </section>
   );
 }

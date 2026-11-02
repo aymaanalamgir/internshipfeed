@@ -292,10 +292,10 @@ creating a candidate. Uploads follow the existing local-only mutation policy.
 
 `job_interactions` contains `id`, `candidate_profile_id`, `canonical_job_id`,
 `interaction_type`, and `created_at`. Allowed types are `view`, `click`, `save`,
-`dismiss`, and `applied`. Every event inserts a new row; two views create two
+`unsave`, `dismiss`, `applied`, and `unapplied`. Every event inserts a new row; two views create two
 records. There is no uniqueness constraint that overwrites interaction history.
 
-`POST /api/jobs/{job_id}/interactions` exposes click/save/dismiss/applied for the
+`POST /api/jobs/{job_id}/interactions` exposes click/save/unsave/dismiss/applied/unapplied for the
 development profile; view stays internal. An explicit request model rejects extra
 fields and invalid actions. `record_interaction()` resolves merged IDs and checks
 the stored canonical job exists before insertion. Existing inactive canonical
@@ -303,31 +303,41 @@ records can receive events too, so historical application actions remain valid.
 
 `GET /api/interactions` derives candidate-specific effective state. A recursive
 query follows canonical identity merge redirects from each historical event ID,
-then groups by the surviving job. `bool_or` derives Saved, Dismissed, and Applied;
-`max(created_at)` across all event types gives the last interaction time. Filtered
-maxima give `saved_at` and `applied_at`; `max(id)` gives a `last_event_id` snapshot
+then selects the latest event by ID per signal family using `DISTINCT ON`.
+Save/Unsave and Applied/Unapplied are paired families; their latest action sets
+the flag. Dismiss remains true once recorded. Active save/application event
+timestamps give `saved_at`/`applied_at`, with null after reversal.
+`max(created_at)` across all events gives the last interaction time;
+`max(id)` gives a `last_event_id` snapshot
 cursor. These values are derived, not additional stored columns. Repeated
 events do not duplicate state rows. View/click-only jobs have all three flags
 false. Never-interacted jobs are absent and the frontend defaults their flags
 to false. History is not rewritten or deleted when jobs merge.
 
-These flags are monotonic because no unsave/undo events exist in this slice.
+Saved and Applied are reversible without deleting history. Repeated explicit
+actions are state setters rather than blind toggles, so duplicate requests do not
+accidentally flip flags. Event ID order resolves tied/backwards timestamps.
 Recommended discovery requires not dismissed and not applied. Saved requires
 saved and not dismissed, while Applied requires applied regardless of the other
 flags. Thus a saved/applied job remains in both history views; a saved/dismissed
 job is absent from discovery and Saved. Interaction state does not affect matching
-scores or canonical job fields. No migration or extra state table was needed.
+profile scores or canonical job fields. Migration `008_reversible_interactions.sql`
+only extends the event-type check constraint. No state table/columns were added.
 
 Repository helpers expose the development profile, append interaction events,
-and save extracted résumé text. The React profile interface at `/profile` consumes
-GET/PUT profile and POST résumé APIs; the existing vanilla feed remains at `/feed`.
+and save extracted résumé text. The React Profile drawer consumes GET/PUT profile,
+POST résumé, and metadata-only `GET /api/resumes/latest`. That read selects the
+development candidate's latest filename/date without reading extracted text.
+All views now share React; `/` is Recommended and `/feed` aliases All listings.
 See [frontend.md](frontend.md) for build and development details. Résumé-to-profile
 suggestions and authentication are future work.
 
 ## On-request recommendations
 
 Candidate Profile + Canonical Jobs → Deterministic Matching → Recommendations API
-is implemented by `matching.py` and `GET /api/recommendations`. The API uses
+uses `matching.py` for unchanged profile fit, `behavioral.py` for bounded
+interaction-derived affinity, and `recommendations.py` for 75/25 composition.
+The API uses
 `candidate_job_details()` to combine `interaction_states()` with existing canonical
 job/source metadata loading. Recommended, Saved, and Applied share this query
 layer and the same pure matcher. Normal `/api/jobs` and `/api/feed` discovery also
@@ -337,22 +347,39 @@ ingestion and diagnostics.
 Matching is rule-based, string-based, skills-based, and explainable. The fixed
 weights are role 40, skills 30, location 20, and term 10. Results contain the same
 seven-field canonical job plus component scores, total, matched skills,
-evidence reasons, and `interaction_state`. Optional `min_score` is an integer in 0–100, default 0.
+evidence reasons, and `interaction_state`. Recommended adds `profile_score`
+(equal to the unchanged `score`), `behavior_score`, `final_score`, and at most two
+`behavior_reasons`. Optional `min_score` still filters profile fit in 0–100.
+Scored collections also attach existing `term` and `keywords` metadata for cards;
+these are response additions rather than new stored fields or scoring inputs.
 Closed/dead canonical jobs are excluded; unknown status follows feed visibility.
 
 Scores are calculated in Python on each request and never written to PostgreSQL.
 There is no score column or recommendations table. Profile changes affect the next
 request without a backfill. Résumé text, interaction events, graduation year,
-descriptions, and posting dates do not contribute points. Posting date and ID only
-break score ties. See [matching.md](matching.md) for exact rules and limitations.
+descriptions, and posting dates do not contribute profile points. A separate
+behavior score uses interaction/job metadata; final rank is 75% profile + 25%
+behavior. Posting date and ID only break ties. See [matching.md](matching.md) and
+[behavioral.md](behavioral.md) for exact rules and limitations.
 
-`GET /api/saved` and `GET /api/applied` return the same scored-card shape. Saved
+`GET /api/saved` and `GET /api/applied` retain profile-scored cards without the
+Recommended-only behavioral fields. Saved
 is newest-save first; Applied is newest-applied first, with ID descending for
 ties. Later clicks/views do not reorder application history. These collections
 retain inactive and unlinked canonical records. `list_job_details()` accepts
 selected/excluded ID sets and reads observations only for selected canonical
 jobs; empty history collections avoid unnecessary metadata reads. No raw events
 are transferred to Python for state replay.
+
+`behavior_history()` uses the same candidate-scoped merge lineage and latest
+signal-family projection. Unsaved/unmarked signals contribute no save/application
+weight until reactivated, while click/dismiss evidence remains independent. It then calls
+the existing bulk metadata loader, including inactive/unlinked history. This is
+three queries (grouped history, canonical metadata, observations) rather than one
+query per event/job. Python builds a temporary bounded affinity object; neither
+preferences nor recommendation scores are written to PostgreSQL. Repeated signals
+are capped across merged aliases; `view` is excluded. Existing indexes suffice,
+with no migration or new state/cache table.
 
 `record_interaction_with_state()` reuses the existing insert helper and returns
 the SQL-derived snapshot in one transaction. It uses the existing reconciliation

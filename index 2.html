@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InternshipFeed</title>
+  <link rel="stylesheet" href="web/styles.css">
+  <script src="web/app.js" defer></script>
+</head>
+<body>
+  <nav class="site-nav" aria-label="Main navigation">
+    <a class="site-brand" href="/feed">InternshipFeed<span>.</span></a>
+    <div><a href="/recommendations">Recommended</a><a href="/saved">Saved</a><a href="/applied">Applied</a><a href="/profile">Profile</a></div>
+  </nav>
+  <main>
+    <header>
+      <p class="eyebrow">YOUR NEXT CHAPTER</p>
+      <h1>InternshipFeed<span>.</span></h1>
+      <p class="intro">Tech internships from Canadian Tech Internships and Simplify, in one feed.</p>
+    </header>
+    <section aria-label="Job filters" class="filters">
+      <div class="search">
+        <label for="search">Search jobs</label>
+        <input id="search" type="search" placeholder="Company, role, location or technology…">
+      </div>
+      <div>
+        <label for="source">Job source</label>
+        <select id="source"><option value="all">All sources</option></select>
+      </div>
+      <div>
+        <label for="status">Application status</label>
+        <select id="status">
+          <option value="all">Available jobs</option>
+          <option value="open">Open</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </div>
+    </section>
+    <div class="results-heading">
+      <p id="summary" role="status" aria-live="polite">Loading jobs…</p>
+      <div class="actions">
+        <button id="reload" type="button">Refresh</button>
+        <button id="sync-jobs" class="primary" type="button">Sync &amp; enrich</button>
+      </div>
+    </div>
+    <section id="sync-panel" aria-label="Sync progress" hidden>
+      <p id="sync-status" role="status" aria-live="polite"></p>
+      <progress id="sync-progress" aria-label="Listings processed"></progress>
+      <p id="sync-counts" class="muted"></p>
+    </section>
+    <p id="message" hidden></p>
+    <div class="table-wrap" id="list" hidden>
+      <table>
+        <caption class="sr-only">Internship listings</caption>
+        <thead><tr><th scope="col">Company &amp; role</th><th scope="col">Location</th><th scope="col">Term</th><th scope="col">Status</th><th scope="col">Posted</th><th scope="col"><span class="sr-only">Application</span></th></tr></thead>
+        <tbody id="jobs"></tbody>
+      </table>
+    </div>
+    <footer>Listings from <a href="https://github.com/negarprh/Canadian-Tech-Internships-2027" target="_blank" rel="noopener noreferrer">Canadian Tech Internships</a> and <a href="https://github.com/SimplifyJobs/Summer2027-Internships" target="_blank" rel="noopener noreferrer">Simplify Internships</a>. Application status reflects each source repository.</footer>
+  </main>
+  <dialog id="job-details" aria-label="Job details">
+    <div class="dialog-toolbar"><button id="close-details" type="button" autofocus>Close</button></div>
+    <div id="detail-content" aria-live="polite"></div>
+  </dialog>
+</body>
+</html>
