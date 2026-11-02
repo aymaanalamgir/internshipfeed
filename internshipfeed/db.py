@@ -329,9 +329,29 @@ def update_development_profile(conn: psycopg.Connection, update: CandidateProfil
 
 def record_interaction(conn, profile_id, canonical_id, interaction_type):
     canonical_id = root_id(conn, canonical_id)
-    if canonical_id is None:
+    if canonical_id is None or not conn.execute('SELECT 1 FROM canonical_jobs WHERE id=%s', (canonical_id,)).fetchone():
         raise ValueError('Unknown canonical job')
     return conn.execute('INSERT INTO job_interactions (candidate_profile_id, canonical_job_id, interaction_type) VALUES (%s,%s,%s) RETURNING *', (profile_id, canonical_id, interaction_type)).fetchone()
+
+
+def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
+    # Resolve historical IDs without rewriting events when reconciliation merges jobs.
+    return conn.execute("""WITH RECURSIVE lineage AS (
+        SELECT DISTINCT i.id AS original_id, i.id AS job_id, i.merged_into_id
+        FROM canonical_job_identities i JOIN job_interactions e ON e.canonical_job_id=i.id
+        WHERE e.candidate_profile_id=%s
+        UNION ALL
+        SELECT l.original_id, i.id, i.merged_into_id
+        FROM lineage l JOIN canonical_job_identities i ON i.id=l.merged_into_id
+    )
+    SELECT l.job_id,
+           bool_or(e.interaction_type='save') AS saved,
+           bool_or(e.interaction_type='dismiss') AS dismissed,
+           bool_or(e.interaction_type='applied') AS applied,
+           max(e.created_at) AS last_interaction_at
+    FROM job_interactions e JOIN lineage l ON l.original_id=e.canonical_job_id
+    WHERE e.candidate_profile_id=%s AND l.merged_into_id IS NULL
+    GROUP BY l.job_id ORDER BY l.job_id""", (profile_id, profile_id)).fetchall()
 
 
 def save_resume_text(conn, profile_id, filename, extracted_text):

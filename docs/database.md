@@ -295,11 +295,30 @@ creating a candidate. Uploads follow the existing local-only mutation policy.
 `dismiss`, and `applied`. Every event inserts a new row; two views create two
 records. There is no uniqueness constraint that overwrites interaction history.
 
+`POST /api/jobs/{job_id}/interactions` exposes click/save/dismiss/applied for the
+development profile; view stays internal. An explicit request model rejects extra
+fields and invalid actions. `record_interaction()` resolves merged IDs and checks
+the stored canonical job exists before insertion. Existing inactive canonical
+records can receive events too, so historical application actions remain valid.
+
+`GET /api/interactions` derives candidate-specific effective state. A recursive
+query follows canonical identity merge redirects from each historical event ID,
+then groups by the surviving job. `bool_or` derives Saved, Dismissed, and Applied;
+`max(created_at)` across all event types gives the last interaction time. Repeated
+events do not duplicate state rows. View/click-only jobs have all three flags
+false. Never-interacted jobs are absent and the frontend defaults their flags
+to false. History is not rewritten or deleted when jobs merge.
+
+These flags are monotonic because no unsave/undo events exist in this slice.
+Dismiss takes precedence for UI visibility, while an applied nondismissed card
+remains visible with its Applied label. Interaction state does not affect matching
+scores or canonical job fields. No migration or extra state table was needed.
+
 Repository helpers expose the development profile, append interaction events,
 and save extracted résumé text. The React profile interface at `/profile` consumes
 GET/PUT profile and POST résumé APIs; the existing vanilla feed remains at `/feed`.
 See [frontend.md](frontend.md) for build and development details. Résumé-to-profile
-suggestions, authentication, and interaction endpoints are future work.
+suggestions, authentication, and dedicated Saved/Applied views are future work.
 
 ## On-request recommendations
 

@@ -169,6 +169,29 @@ class MatchResult(BaseModel):
     reasons: List[str]
 
 
+class InteractionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["click", "save", "dismiss", "applied"]
+
+
+class JobInteraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int = Field(gt=0)
+    candidate_profile_id: int = Field(gt=0)
+    canonical_job_id: int = Field(gt=0)
+    interaction_type: Literal["click", "save", "dismiss", "applied"]
+    created_at: datetime
+
+
+class JobInteractionState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: int = Field(gt=0)
+    saved: bool
+    dismissed: bool
+    applied: bool
+    last_interaction_at: datetime
+
+
 class StoredCanonicalJob(CanonicalJob):
     """Persisted metadata; CanonicalJob remains the small public API contract."""
     description: Optional[str]

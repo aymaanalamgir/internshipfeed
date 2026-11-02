@@ -11,7 +11,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, MatchResult, Resume
+from .models import (CandidateProfile, CandidateProfileUpdate, CanonicalJob, InteractionRequest,
+                     JobDetails, JobInteraction, JobInteractionState, MatchResult, Resume)
 from .matching import rank_jobs
 from .resumes import MAX_UPLOAD_BYTES, ResumeExtractionError, extract_pdf_text
 from .ingestion import SYNC_LOCK, recover_interrupted
@@ -127,6 +128,26 @@ def update_profile(update: CandidateProfileUpdate, request: Request, conn=Depend
     return result
 
 
+@app.get("/api/interactions", response_model=List[JobInteractionState])
+def interactions(conn=Depends(connection)):
+    candidate = db.development_profile(conn)
+    if candidate is None:
+        raise HTTPException(503, "Development profile is missing. Initialize the database before using interactions.")
+    return db.interaction_states(conn, candidate['id'])
+
+
+@app.post("/api/jobs/{job_id}/interactions", response_model=JobInteraction, status_code=201)
+def job_interaction(job_id: int, interaction: InteractionRequest, request: Request, conn=Depends(connection)):
+    local_mutation(request)
+    candidate = db.development_profile(conn)
+    if candidate is None:
+        raise HTTPException(503, "Development profile is missing. Initialize the database before using interactions.")
+    try:
+        return db.record_interaction(conn, candidate['id'], job_id, interaction.type)
+    except ValueError:
+        raise HTTPException(404, "Job not found") from None
+
+
 @app.post("/api/sync", status_code=202)
 def sync_jobs(request: Request):
     local_mutation(request)
@@ -201,6 +222,8 @@ def index():
 
 @app.get("/profile", include_in_schema=False)
 @app.get("/profile/", include_in_schema=False)
+@app.get("/recommendations", include_in_schema=False)
+@app.get("/recommendations/", include_in_schema=False)
 def profile_page():
     path = db.ROOT / 'frontend' / 'dist' / 'index.html'
     if not path.is_file():

@@ -646,6 +646,121 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn('Development profile is missing', response.json()['detail'])
         self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 0)
 
+    def test_interaction_api_appends_events_for_the_development_candidate(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        candidate = db.development_profile(self.conn)
+        before_jobs = self.conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall()
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for action in ('save', 'save', 'click', 'dismiss', 'applied'):
+                response = client.post('/api/jobs/%s/interactions' % job_id, json={'type': action})
+                self.assertEqual(response.status_code, 201)
+                event = response.json()
+                self.assertEqual(event['canonical_job_id'], job_id)
+                self.assertEqual(event['candidate_profile_id'], candidate['id'])
+                self.assertEqual(event['interaction_type'], action)
+                row = self.conn.execute('SELECT * FROM job_interactions WHERE id=%s', (event['id'],)).fetchone()
+                self.assertEqual(row['created_at'], datetime.fromisoformat(event['created_at'].replace('Z', '+00:00')))
+            states = client.get('/api/interactions').json()
+        self.assertEqual(len(states), 1)
+        self.assertEqual({key: states[0][key] for key in ('job_id', 'saved', 'dismissed', 'applied')},
+                         {'job_id': job_id, 'saved': True, 'dismissed': True, 'applied': True})
+        newest = self.conn.execute('SELECT max(created_at) AS latest FROM job_interactions').fetchone()['latest']
+        self.assertEqual(datetime.fromisoformat(states[0]['last_interaction_at'].replace('Z', '+00:00')), newest)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 5)
+        self.assertEqual(self.conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall(), before_jobs)
+        self.assertEqual(db.development_profile(self.conn), candidate)
+
+    def test_click_and_internal_view_do_not_imply_saved_or_applied(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual(client.get('/api/interactions').json(), [])
+            response = client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'click'})
+            self.assertEqual(response.status_code, 201)
+            state = client.get('/api/interactions').json()[0]
+        self.assertFalse(state['saved'] or state['dismissed'] or state['applied'])
+        db.record_interaction(self.conn, db.development_profile(self.conn)['id'], job_id, 'view')
+        after = db.interaction_states(self.conn, db.development_profile(self.conn)['id'])[0]
+        self.assertFalse(after['saved'] or after['dismissed'] or after['applied'])
+
+    def test_interaction_validation_missing_jobs_and_local_mutation_policy(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        orphan = self.conn.execute('INSERT INTO canonical_job_identities DEFAULT VALUES RETURNING id').fetchone()['id']
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for body in ({'type': 'favorite'}, {'type': 'view'}, {'type': 123}, {},
+                         {'type': 'save', 'candidate_profile_id': 999}, {'type': 'save', 'extra': True}):
+                with self.subTest(body=body):
+                    self.assertEqual(client.post('/api/jobs/%s/interactions' % job_id, json=body).status_code, 422)
+            for missing in (999999, orphan):
+                self.assertEqual(client.post('/api/jobs/%s/interactions' % missing, json={'type': 'save'}).status_code, 404)
+            self.assertEqual(client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'save'},
+                                         headers={'Origin': 'https://other.example'}).status_code, 403)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 0)
+
+    def test_interaction_states_are_candidate_specific(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        first = db.development_profile(self.conn)['id']
+        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        db.record_interaction(self.conn, other, job_id, 'dismiss')
+        db.record_interaction(self.conn, other, job_id, 'applied')
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual(client.get('/api/interactions').json(), [])
+            response = client.post('/api/jobs/%s/interactions?candidate_profile_id=%s' % (job_id, other), json={'type': 'save'})
+            self.assertEqual(response.json()['candidate_profile_id'], first)
+            states = client.get('/api/interactions').json()
+        self.assertEqual(len(states), 1)
+        self.assertTrue(states[0]['saved'])
+        self.assertFalse(states[0]['dismissed'] or states[0]['applied'])
+        self.assertTrue(db.interaction_states(self.conn, other)[0]['dismissed'])
+
+    def test_interactions_follow_multi_hop_merges_without_rewriting_history(self):
+        records = []
+        for name in ('a', 'b', 'c'):
+            record = self.job.model_copy(update={'external_id': name, 'url': 'https://example.com/jobs/' + name})
+            self.save(record)
+            records.append(record)
+        ids = [db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id for record in records]
+        candidate = db.development_profile(self.conn)['id']
+        old = db.record_interaction(self.conn, candidate, ids[2], 'save')
+        db.record_interaction(self.conn, candidate, ids[0], 'applied')
+        self.save(records[2].model_copy(update={'description': 'Readable job', 'enrichment_status': 'success', 'resolved_url': records[1].url}))
+        self.save(records[1].model_copy(update={'description': 'Readable job', 'enrichment_status': 'success', 'resolved_url': records[0].url}))
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            response = client.post('/api/jobs/%s/interactions' % ids[2], json={'type': 'click'})
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.json()['canonical_job_id'], ids[0])
+            states = client.get('/api/interactions').json()
+        self.assertEqual(len(states), 1)
+        self.assertEqual(states[0]['job_id'], ids[0])
+        self.assertTrue(states[0]['saved'] and states[0]['applied'])
+        self.assertFalse(states[0]['dismissed'])
+        self.assertEqual(self.conn.execute('SELECT canonical_job_id FROM job_interactions WHERE id=%s', (old['id'],)).fetchone()['canonical_job_id'], ids[2])
+
+    def test_interaction_apis_missing_profile_fail_without_reseeding(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        self.conn.execute('DELETE FROM candidate_profiles')
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for response in (client.get('/api/interactions'), client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'save'})):
+                self.assertEqual(response.status_code, 503)
+                self.assertIn('Development profile is missing', response.json()['detail'])
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 0)
+
+    def test_interaction_endpoints_do_not_change_recommendations_or_canonical_jobs(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        before_jobs = self.conn.execute('SELECT * FROM canonical_jobs').fetchall()
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            before = client.get('/api/recommendations').json()
+            for action in ('save', 'applied', 'dismiss', 'click'):
+                self.assertEqual(client.post('/api/jobs/%s/interactions' % job_id, json={'type': action}).status_code, 201)
+            self.assertEqual(client.get('/api/recommendations').json(), before)
+            self.assertTrue(client.get('/api/interactions').json()[0]['dismissed'])
+        self.assertEqual(self.conn.execute('SELECT * FROM canonical_jobs').fetchall(), before_jobs)
+
     def test_pdf_resume_upload_persists_text_metadata_and_preserves_profile(self):
         before = db.development_profile(self.conn)
         content = make_pdf(['Sample Candidate\nEducation', None, 'Projects\nPython / SQL / C++'])

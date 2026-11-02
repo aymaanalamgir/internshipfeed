@@ -23,6 +23,8 @@ flowchart TD
     CP --> MATCH[Deterministic matching]
     C --> MATCH
     MATCH --> RECS[Recommendations API]
+    RECS --> CARDS[React recommendation cards]
+    CARDS --> E[(job_interactions)]
     CP[(candidate_profiles)] --> E[(job_interactions)]
     C --> E
     CP --> RES[(resumes: extracted text and metadata)]
@@ -90,8 +92,9 @@ python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
 
 The existing jobs feed remains at `/` and `/feed`. The React + TypeScript profile
-screen is at **http://127.0.0.1:8000/profile**. It edits the existing profile and
-uploads PDFs through the backend APIs. Build output is ignored by Git; rebuild
+screen is at **http://127.0.0.1:8000/profile**. Recommended jobs and actions are at
+**http://127.0.0.1:8000/recommendations**. The profile edits preferences and uploads
+PDFs through the backend APIs. Build output is ignored by Git; rebuild
 after frontend changes. [Frontend setup and architecture](docs/frontend.md)
 includes the optional Vite development workflow.
 
@@ -160,6 +163,8 @@ remain local diagnostics/replay artifacts.
 - `PUT /api/profile`: replace all five editable fields; return the normalized, persisted profile.
 - `POST /api/resumes`: upload one PDF in multipart field `file`; return HTTP 201 with metadata and extracted text.
 - `GET /api/recommendations`: scored visible canonical jobs with component scores, matched skills, and reasons; optional `min_score=0..100` (default 0).
+- `POST /api/jobs/{id}/interactions`: append a `click`, `save`, `dismiss`, or `applied` event for the development profile; merged IDs resolve to their surviving canonical job.
+- `GET /api/interactions`: effective Saved/Dismissed/Applied flags and last interaction time, grouped by current canonical job.
 - `GET /api/sources`: configured datasets, including source IDs and enabled state.
 - `GET /api/jobs`: seven-field canonical jobs; optional `source_id` (dataset ID), `source` (repository URL), `status`, and `q` filters.
 - `GET /api/jobs/{id}`: a canonical job; merged IDs resolve to their survivor.
@@ -169,7 +174,7 @@ remain local diagnostics/replay artifacts.
 - `GET /api/ingestion-runs`, `GET /api/ingestion-runs/latest`, `GET /api/ingestion-runs/{uuid}`: per-source operational records; the list accepts `source_id`.
 - `GET /api/health`: database connectivity; `GET /docs`: API documentation.
 
-Sync, profile updates, and résumé uploads use the existing local-only mutation policy. Internet
+Sync, profile updates, résumé uploads, and job actions use the existing local-only mutation policy. Internet
 deployment needs an authenticated operator interface and durable background worker
 management.
 
@@ -237,8 +242,19 @@ curl 'http://127.0.0.1:8000/api/recommendations?min_score=20'
 The profile UI supports tag editing, explicit saves, inline feedback, and PDF
 uploads. Uploaded filenames are shown for the current browser session; there is
 no résumé-history API. Uploads do not change the form or candidate preferences.
-Interaction helpers remain storage foundations. Résumé-to-profile suggestions,
-a recommendations UI, and authentication are future work.
+The Recommended screen offers **Apply → Save → Applied → Dismiss**. Apply opens
+the external application in a new tab and attempts to record a click; a recording
+failure never blocks navigation or implies an application was completed. Save
+uses an active bookmark, Applied uses a clock, and Dismiss removes the card only
+after the server confirms the event. State returns after refresh. A compact score
+disclosure exposes the unchanged matching breakdown and reasons.
+
+Interaction history is append-only. Effective flags are derived from events and
+follow canonical merge redirects; scores never use interaction state. Save and
+Applied are one-directional in this slice, and there is no undo for Dismiss.
+See [docs/interactions.md](docs/interactions.md) for contracts and exact semantics.
+Résumé-to-profile suggestions, dedicated Saved/Applied views, and authentication
+are future work.
 
 ## Tests
 
@@ -272,6 +288,9 @@ schemas and advisory sync-lock keys from the running application.
 Matching tests cover explicit role/skill aliases, technical-token boundaries,
 Canadian/remote geography, season/year pairing, explanations, exact totals,
 visibility, stable tie-breaking, and ranking changes after profile updates.
+`scripts/check_recommendations_ui.py` runs the action workflow plus the profile
+and feed browser checks against an isolated PostgreSQL schema and removes its
+temporary server/schema afterward. It leaves live candidate history untouched.
 
 ## Modules
 
@@ -284,4 +303,4 @@ visibility, stable tie-breaking, and ranking changes after profile updates.
 - `db.py`, `migrations/`: PostgreSQL configuration, lineage, repositories, and schema.
 - `ingestion.py`, `sync.py`, `cli.py`: source runs, batch progress, background workflow.
 - `api.py`, `web/`: database-backed API and UI.
-- `frontend/`: React + TypeScript profile UI, Vite build, and self-hosted fonts.
+- `frontend/`: React + TypeScript profile/recommendation UIs, Vite build, and self-hosted fonts.

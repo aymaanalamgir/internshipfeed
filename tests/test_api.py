@@ -49,6 +49,14 @@ class ProfileValidationTests(unittest.TestCase):
 
 
 class ApiFailureTests(unittest.TestCase):
+    def test_interaction_storage_failures_return_clean_503(self):
+        with patch('internshipfeed.api.db.connect', side_effect=psycopg.OperationalError('private database details')):
+            with TestClient(app) as client:
+                responses = [client.get('/api/interactions'), client.post('/api/jobs/1/interactions', json={'type': 'save'})]
+        for response in responses:
+            self.assertEqual(response.status_code, 503)
+            self.assertNotIn('private database details', response.text)
+
     def test_unavailable_database_returns_503(self):
         with patch("internshipfeed.api.db.connect", side_effect=psycopg.OperationalError("connection unavailable")):
             with TestClient(app) as client:

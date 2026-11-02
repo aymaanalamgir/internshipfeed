@@ -1,4 +1,4 @@
-export function TopNav() {
+export function TopNav({ current }: { current: 'profile' | 'recommended' }) {
   return (
     <header className="site-header">
       <nav className="top-nav" aria-label="Main navigation">
@@ -10,7 +10,8 @@ export function TopNav() {
         </a>
         <div className="nav-links">
           <a href="/feed">Feed</a>
-          <a href="/profile" aria-current="page">Profile</a>
+          <a href="/recommendations" aria-current={current === 'recommended' ? 'page' : undefined}>Recommended</a>
+          <a href="/profile" aria-current={current === 'profile' ? 'page' : undefined}>Profile</a>
         </div>
       </nav>
     </header>

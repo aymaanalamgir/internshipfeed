@@ -3,9 +3,10 @@ import react from '@vitejs/plugin-react';
 
 const backend = process.env.BACKEND_URL ?? 'http://127.0.0.1:8000';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
-  base: '/profile/',
+  // Keep existing production asset URLs; dev uses root routes for both screens.
+  base: command === 'build' ? '/profile/' : '/',
   server: {
     strictPort: true,
     proxy: {
@@ -15,4 +16,4 @@ export default defineConfig({
       '/web': { target: backend, changeOrigin: false },
     },
   },
-});
+}));
