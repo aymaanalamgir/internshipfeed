@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 import { recordInteraction } from '../api/interactions';
-import { getAppliedJobs, getRecommendations, getSavedJobs } from '../api/recommendations';
+import { getAppliedJobs, getDismissedJobs, getRecommendations, getSavedJobs } from '../api/recommendations';
 import { applicationUrl, confirmInteraction, emptyInteraction, indexInteractions, visibleJobs } from './workflow';
 import type { InteractionReceipt, InteractionState, InteractionType, Recommendation } from '../types/jobs';
 
@@ -105,7 +105,21 @@ test('interaction API posts only the action and returns confirmation', async () 
 test('each collection uses its backend product-state endpoint', async () => {
   const fetch = mock.method(globalThis, 'fetch', async () => new Response('[]', { status: 200 }));
   try {
-    await getRecommendations(); await getSavedJobs(); await getAppliedJobs();
-    assert.deepEqual(fetch.mock.calls.map(call => call.arguments[0]), ['/api/recommendations', '/api/saved', '/api/applied']);
+    await getRecommendations(); await getSavedJobs(); await getAppliedJobs(); await getDismissedJobs();
+    assert.deepEqual(fetch.mock.calls.map(call => call.arguments[0]), ['/api/recommendations', '/api/saved', '/api/applied', '/api/dismissed']);
   } finally { fetch.mock.restore(); }
+});
+
+test('Dismissed retains history; restoring preserves Save/Applied and rejects stale dismissal receipts', () => {
+  const dismissed = confirmInteraction({}, 1, receipt('dismiss', { saved: true, applied: true, dismissed: true }, 1, 1));
+  const inactive = [{ ...recommendation, job: { ...recommendation.job, status: 'closed' as const } }];
+  assert.deepEqual(visibleJobs('dismissed', inactive, dismissed), inactive);
+  const restored = confirmInteraction(dismissed, 1, receipt('undismiss', { saved: true, applied: true, dismissed: false }, 1, 2));
+  assert.deepEqual(visibleJobs('dismissed', [recommendation], restored), []);
+  assert.deepEqual(visibleJobs('saved', [recommendation], restored), [recommendation]);
+  assert.deepEqual(visibleJobs('applied', [recommendation], restored), [recommendation]);
+  assert.deepEqual(visibleJobs('recommended', [recommendation], restored), []);
+  assert.equal(confirmInteraction(restored, 1, receipt('dismiss', { dismissed: true }, 1, 1))[1].dismissed, false);
+  const discovery = confirmInteraction({}, 1, receipt('undismiss', { dismissed: false }));
+  assert.deepEqual(visibleJobs('recommended', [recommendation], discovery), [recommendation]);
 });

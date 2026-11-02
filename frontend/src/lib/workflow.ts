@@ -2,7 +2,7 @@ import type { InteractionReceipt, InteractionState, InteractionStates, JobView, 
 
 export function emptyInteraction(jobId: number): InteractionState {
   return { job_id: jobId, saved: false, dismissed: false, applied: false, last_interaction_at: null,
-    saved_at: null, applied_at: null, last_event_id: 0 };
+    saved_at: null, applied_at: null, dismissed_at: null, last_event_id: 0 };
 }
 
 export function indexInteractions(states: InteractionState[]): InteractionStates {
@@ -22,6 +22,7 @@ export function confirmInteraction(states: InteractionStates, requestedId: numbe
 export function visibleJobs(view: JobView, jobs: Recommendation[], states: InteractionStates): Recommendation[] {
   return jobs.filter(({ job }) => {
     const state = states[job.id] ?? emptyInteraction(job.id);
+    if (view === 'dismissed') return state.dismissed;
     if (view === 'applied') return state.applied;
     if (view === 'saved') return state.saved && !state.dismissed;
     return !state.dismissed && !state.applied && !['closed', 'dead'].includes(job.status);

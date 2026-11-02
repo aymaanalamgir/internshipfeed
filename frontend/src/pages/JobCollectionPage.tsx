@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
-import { getAppliedJobs, getRecommendations, getSavedJobs } from '../api/recommendations';
+import { getAppliedJobs, getDismissedJobs, getRecommendations, getSavedJobs } from '../api/recommendations';
 import { RecommendationCard } from '../components/RecommendationCard';
 import { emptyInteraction, visibleJobs } from '../lib/workflow';
 import type { CandidateJob, JobView } from '../types/jobs';
 import type { JobWorkflow } from '../hooks/useJobActions';
 
-const LOADERS = { recommended: getRecommendations, saved: getSavedJobs, applied: getAppliedJobs };
-const TITLES = { recommended: 'Recommended', saved: 'Saved', applied: 'Applied' };
-const EMPTY = { recommended: 'No new recommendations.', saved: 'No saved jobs yet.', applied: 'No applications yet.' };
+const LOADERS = { recommended: getRecommendations, saved: getSavedJobs, applied: getAppliedJobs, dismissed: getDismissedJobs };
+const TITLES = { recommended: 'Recommended', saved: 'Saved', applied: 'Applied', dismissed: 'Dismissed' };
+const EMPTY = { recommended: 'No new recommendations.', saved: 'No saved jobs yet.', applied: 'No applications yet.', dismissed: 'No dismissed jobs.' };
 
 export function JobCollectionPage({ view, workflow, revision, onOpenJob, onOpenProfile }: {
   view: JobView; workflow: JobWorkflow; revision: number; onOpenJob: (id: number) => void; onOpenProfile: () => void;
@@ -36,7 +36,7 @@ export function JobCollectionPage({ view, workflow, revision, onOpenJob, onOpenP
       : <><div className="recommendation-list">{visible.slice(0, limit).map(item => <RecommendationCard key={item.job.id} recommendation={item} view={view}
         interactionState={workflow.states[item.job.id] ?? emptyInteraction(item.job.id)} pending={workflow.pending[item.job.id]} error={workflow.errors[item.job.id]}
         onOpenJob={onOpenJob} onOpenProfile={onOpenProfile} onApply={workflow.apply} onSave={(id, type) => void workflow.act(id, type)}
-        onApplied={(id, type) => void workflow.act(id, type)} onDismiss={id => void workflow.act(id, 'dismiss')} />)}</div>
+        onApplied={(id, type) => void workflow.act(id, type)} onDismiss={(id, type) => void workflow.act(id, type)} />)}</div>
         <div className="collection-footer"><span>Showing {Math.min(limit, visible.length)} of {visible.length}</span>
           {limit < visible.length && <button className="button" onClick={() => setLimit(value => value + 24)}>Show more</button>}</div></>}
   </main>;

@@ -31,12 +31,14 @@ flowchart TD
 | dismiss | −3 |
 | view | ignored |
 | unsave / unapplied | cancel the corresponding positive signal; no negative weight |
+| undismiss | cancel the corresponding negative dismissal signal; no positive weight |
 
 `INTERACTION_WEIGHTS` is the single configuration for preference evidence.
 `db.behavior_history()` uses the same recursive canonical-identity lineage as
 workflow state. It selects the latest event in each signal family with
 `DISTINCT ON (job_id, signal)` ordered by event ID. Unsave cancels Save; Unapplied
-cancels Applied until a later positive action. Click and Dismiss stay independent.
+cancels Applied; Undismiss cancels Dismiss until a later activation. Click remains
+independent. Restoring a job removes its dismissal evidence without deleting history.
 Repeated clicks/saves/applications/
 dismissals contribute once each per surviving canonical job, including events
 recorded against historical aliases before a merge. Event rows remain intact.
@@ -122,7 +124,7 @@ Neutral behavior preserves order, not the old numeric display: profile 40 plus
 neutral 50 produces final rank 43; profile 100 plus neutral 50 produces 88.
 
 The existing `min_score` parameter still filters **profile score**, inclusively.
-Saved/Applied keep profile-fit responses and action-time ordering. Generic Feed
+Saved/Applied/Dismissed keep profile-fit responses and action-time ordering. Generic Feed
 keeps chronological/search ordering and its existing workflow exclusions; it
 does not use behavioral ranking.
 
@@ -150,7 +152,7 @@ behavior-profile endpoint, new state table, schema migration, or index.
 React consumes server ordering without scoring or sorting. Recommended displays
 `final_score`; expanded detail distinguishes Profile fit, Preference fit, and
 Final rank, gives the 75/25 formula and neutral baseline, and shows up to two
-behavioral reasons above existing profile evidence. Saved/Applied display the
+behavioral reasons above existing profile evidence. Saved/Applied/Dismissed display the
 original profile score. Actions confirm workflow state immediately; ranking and
 its explanations recompute on the next Recommended navigation/refresh. Cards
 therefore do not jump while a candidate is acting on them.
@@ -173,4 +175,4 @@ independence. Frontend tests cover final versus profile display and preserving
 server order. The existing browser workflow also verifies a known Data/Product
 example: profile 40/40 and neutral rank 43/43 becomes behavior 65/52 and final
 46/43 after Save + Applied Data history; refresh puts Data first without changing
-profile scores. Profile, résumé, and three-view workflow regressions are retained.
+profile scores. Profile, résumé, and four-view workflow regressions are retained.

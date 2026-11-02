@@ -23,11 +23,11 @@ export function useJobActions() {
     try {
       const receipt = await recordInteraction(id, type);
       setStates(current => confirmInteraction(current, id, receipt));
-      const messages = { save: 'Job saved.', unsave: 'Job removed from Saved.', dismiss: 'Job dismissed.', applied: 'Marked as applied.', unapplied: 'Marked as not applied.' };
+      const messages = { save: 'Job saved.', unsave: 'Job removed from Saved.', dismiss: 'Job dismissed.', undismiss: 'Job restored.', applied: 'Marked as applied.', unapplied: 'Marked as not applied.' };
       setAnnouncement(messages[type]);
       return true;
     } catch {
-      const actions = { save: 'save this job', unsave: 'unsave this job', dismiss: 'dismiss this job', applied: 'mark this job as applied', unapplied: 'unmark this job as applied' };
+      const actions = { save: 'save this job', unsave: 'unsave this job', dismiss: 'dismiss this job', undismiss: 'restore this job', applied: 'mark this job as applied', unapplied: 'unmark this job as applied' };
       const action = actions[type];
       setErrors(current => ({ ...current, [id]: `Could not ${action}. Please try again.` }));
       return false;

@@ -1,10 +1,10 @@
-import type { AppliedAction, CanonicalJob, InteractionState, InteractionType, SaveAction } from '../types/jobs';
+import type { AppliedAction, DismissAction, CanonicalJob, InteractionState, InteractionType, SaveAction } from '../types/jobs';
 import { applicationUrl } from '../lib/workflow';
 import { Icon } from './Icon';
 
 export interface JobActionsProps {
   job: CanonicalJob; state: InteractionState; pending?: InteractionType; error?: string; appliedView?: boolean;
-  onApply: (id: number) => void; onSave: (id: number, type: SaveAction) => void; onApplied: (id: number, type: AppliedAction) => void; onDismiss: (id: number) => void;
+  onApply: (id: number) => void; onSave: (id: number, type: SaveAction) => void; onApplied: (id: number, type: AppliedAction) => void; onDismiss: (id: number, type: DismissAction) => void;
 }
 export function JobActions({ job, state, pending, error, appliedView, onApply, onSave, onApplied, onDismiss }: JobActionsProps) {
   const url = applicationUrl(job.application_url);
@@ -18,7 +18,9 @@ export function JobActions({ job, state, pending, error, appliedView, onApply, o
     <button className={`button utility-action${state.applied ? ' is-active' : ''}`} aria-label={state.applied ? 'Unmark job as applied' : 'Mark job as applied'}
       title={state.applied ? 'Unmark as applied' : 'Mark as applied'} aria-pressed={state.applied} disabled={Boolean(pending)} onClick={() => onApplied(job.id, state.applied ? 'unapplied' : 'applied')}>
       <Icon name="clock" />{pending === 'applied' ? 'Recording…' : pending === 'unapplied' ? 'Updating…' : state.applied ? 'Applied' : 'Mark applied'}</button>
-    {!appliedView && <button className="icon-button dismiss-action" aria-label="Dismiss job" title="Dismiss job" disabled={Boolean(pending) || state.dismissed}
-      onClick={() => onDismiss(job.id)}><Icon name="close" /></button>}
+    {state.dismissed ? <button className="button utility-action" aria-label="Restore job" title="Restore job" disabled={Boolean(pending)}
+      onClick={() => onDismiss(job.id, 'undismiss')}><Icon name="refresh" />{pending === 'undismiss' ? 'Restoring…' : 'Restore'}</button>
+      : !appliedView && <button className="icon-button dismiss-action" aria-label="Dismiss job" title="Dismiss job" disabled={Boolean(pending)}
+        onClick={() => onDismiss(job.id, 'dismiss')}><Icon name="close" /></button>}
   </div>{error && <p className="field-error action-error" role="alert">{error}</p>}</>;
 }

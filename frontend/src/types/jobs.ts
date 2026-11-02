@@ -21,7 +21,8 @@ export interface Recommendation {
 
 export type SaveAction = 'save' | 'unsave';
 export type AppliedAction = 'applied' | 'unapplied';
-export type InteractionType = 'click' | SaveAction | 'dismiss' | AppliedAction;
+export type DismissAction = 'dismiss' | 'undismiss';
+export type InteractionType = 'click' | SaveAction | DismissAction | AppliedAction;
 
 export interface InteractionEvent {
   id: number;
@@ -39,6 +40,7 @@ export interface InteractionState {
   last_interaction_at: string | null;
   saved_at: string | null;
   applied_at: string | null;
+  dismissed_at: string | null;
   last_event_id: number;
 }
 
@@ -61,7 +63,7 @@ export interface RankingSignals {
 
 export interface RankedRecommendation extends CandidateJob, RankingSignals {}
 
-export type JobView = 'recommended' | 'saved' | 'applied';
+export type JobView = 'recommended' | 'saved' | 'applied' | 'dismissed';
 export type InteractionStates = Record<number, InteractionState>;
 
 export interface JobKeywords {

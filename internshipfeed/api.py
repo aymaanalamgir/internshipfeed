@@ -134,7 +134,7 @@ def _job_collection(conn, view, min_score=0):
     else:
         matches = [score_job(profile, item) for item in details]
     if view != 'recommended':
-        field = 'saved_at' if view == 'saved' else 'applied_at'
+        field = {'saved': 'saved_at', 'applied': 'applied_at', 'dismissed': 'dismissed_at'}[view]
         matches.sort(key=lambda match: (getattr(states[match.job.id], field).timestamp(), match.job.id), reverse=True)
     result_model = RecommendedJobView if view == 'recommended' else CandidateJobView
     metadata = {item.job.id: item for item in details}
@@ -155,6 +155,11 @@ def saved_jobs(conn=Depends(connection)):
 @app.get("/api/applied", response_model=List[CandidateJobView])
 def applied_jobs(conn=Depends(connection)):
     return _job_collection(conn, 'applied')
+
+
+@app.get("/api/dismissed", response_model=List[CandidateJobView])
+def dismissed_jobs(conn=Depends(connection)):
+    return _job_collection(conn, 'dismissed')
 
 
 @app.put("/api/profile", response_model=CandidateProfile)
@@ -285,6 +290,8 @@ def health(conn=Depends(connection)):
 @app.get("/saved/", include_in_schema=False)
 @app.get("/applied", include_in_schema=False)
 @app.get("/applied/", include_in_schema=False)
+@app.get("/dismissed", include_in_schema=False)
+@app.get("/dismissed/", include_in_schema=False)
 def profile_page():
     if not FRONTEND_ENTRY.is_file():
         raise HTTPException(503, 'The interface is unavailable. Build the frontend first.')

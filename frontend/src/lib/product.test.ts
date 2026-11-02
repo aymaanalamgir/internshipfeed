@@ -18,11 +18,12 @@ const listing: JobDetails = {
 test('home prioritizes Recommended and legacy paths retain compatible destinations', () => {
   for (const path of ['/', '/recommendations', '/recommendations/', '/profile']) assert.equal(viewForPath(path), 'recommended');
   for (const path of ['/listings', '/listings/', '/feed']) assert.equal(viewForPath(path), 'listings');
-  assert.equal(viewForPath('/saved'), 'saved'); assert.equal(viewForPath('/applied/'), 'applied');
+  assert.equal(viewForPath('/dismissed/'), 'dismissed'); assert.equal(viewForPath('/saved'), 'saved'); assert.equal(viewForPath('/applied/'), 'applied');
 });
-test('navigation exposes four destinations and Profile as a dialog control', () => {
+test('navigation exposes five destinations and Profile as a dialog control', () => {
   const html = renderToStaticMarkup(createElement(TopNav, { current: 'listings', profileOpen: false, onProfile() {} }));
   assert.match(html, /href="\/listings" aria-current="page"/);
+  assert.match(html, /href="\/dismissed"/);
   assert.match(html, /aria-haspopup="dialog"/);
   assert.doesNotMatch(html, /href="\/profile"/);
 });
@@ -62,4 +63,14 @@ test('Applied actions retain history state and omit Dismiss', () => {
   assert.match(html, /aria-label="Unsave job"/);
   assert.match(html, /aria-label="Unmark job as applied"/);
   assert.doesNotMatch(html, /disabled/);
+});
+
+test('dismissed jobs expose an enabled Restore action, including in Applied', () => {
+  for (const appliedView of [false, true]) {
+    const html = renderToStaticMarkup(createElement(JobActions, { job: listing.job, state: { ...emptyInteraction(1), dismissed: true }, appliedView,
+      onApply() {}, onSave() {}, onApplied() {}, onDismiss() {} }));
+    assert.match(html, /aria-label="Restore job"/);
+    assert.doesNotMatch(html, /aria-label="Dismiss job"/);
+    assert.doesNotMatch(html, /disabled/);
+  }
 });

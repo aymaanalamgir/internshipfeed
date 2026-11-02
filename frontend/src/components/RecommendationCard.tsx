@@ -1,4 +1,4 @@
-import type { AppliedAction, CandidateJob, InteractionState, InteractionType, JobView, RankingSignals, Recommendation, SaveAction } from '../types/jobs';
+import type { AppliedAction, DismissAction, CandidateJob, InteractionState, InteractionType, JobView, RankingSignals, Recommendation, SaveAction } from '../types/jobs';
 import { JobActions } from './JobActions';
 import { SkillTag } from './SkillTag';
 import { MatchSummary } from './MatchSummary';
@@ -6,7 +6,7 @@ import { MatchSummary } from './MatchSummary';
 interface Props {
   view?: JobView; recommendation: Recommendation & Partial<RankingSignals> & Partial<Pick<CandidateJob, 'term' | 'keywords'>>;
   interactionState: InteractionState; pending?: InteractionType; error?: string;
-  onApply: (id: number) => void; onSave: (id: number, type: SaveAction) => void; onDismiss: (id: number) => void; onApplied: (id: number, type: AppliedAction) => void;
+  onApply: (id: number) => void; onSave: (id: number, type: SaveAction) => void; onDismiss: (id: number, type: DismissAction) => void; onApplied: (id: number, type: AppliedAction) => void;
   onOpenJob?: (id: number) => void; onOpenProfile?: () => void;
 }
 export function RecommendationCard({ view = 'recommended', recommendation, interactionState, pending, error,
@@ -22,6 +22,8 @@ export function RecommendationCard({ view = 'recommended', recommendation, inter
         {['closed', 'dead'].includes(job.status) && <span className="job-availability">{job.status === 'closed' ? 'Posting closed' : 'Link unavailable'}</span>}</p>
       {view === 'applied' && interactionState.applied_at && <p className="applied-date">Applied <time dateTime={interactionState.applied_at}>
         {new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(interactionState.applied_at))}</time></p>}
+      {view === 'dismissed' && interactionState.dismissed_at && <p className="applied-date">Dismissed <time dateTime={interactionState.dismissed_at}>
+        {new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(interactionState.dismissed_at))}</time></p>}
     </div><span className="match-score">{personalized ? recommendation.final_score : recommendation.score}<small>% match</small></span></div>
     {skills.length > 0 && <div className="skill-tags matched-technologies" aria-label="Job skills">{skills.slice(0, 6).map(skill => <SkillTag key={skill} label={skill} />)}
       {skills.length > 6 && <span className="tag-overflow">+{skills.length - 6}</span>}</div>}

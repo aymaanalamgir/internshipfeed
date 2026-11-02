@@ -12,3 +12,7 @@ export function getSavedJobs(signal?: AbortSignal): Promise<CandidateJob[]> {
 export function getAppliedJobs(signal?: AbortSignal): Promise<CandidateJob[]> {
   return requestJson('/api/applied', { signal });
 }
+
+export function getDismissedJobs(signal?: AbortSignal): Promise<CandidateJob[]> {
+  return requestJson('/api/dismissed', { signal });
+}

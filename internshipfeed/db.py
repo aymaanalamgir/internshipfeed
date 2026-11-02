@@ -261,9 +261,9 @@ def candidate_job_details(conn, profile_id, view='recommended', **filters):
     if view == 'recommended':
         hidden = [job_id for job_id, state in states.items() if state.dismissed or state.applied]
         details = list_job_details(conn, exclude_job_ids=hidden, **filters)
-    elif view in {'saved', 'applied'}:
+    elif view in {'saved', 'applied', 'dismissed'}:
         selected = [job_id for job_id, state in states.items()
-                    if (state.saved and not state.dismissed if view == 'saved' else state.applied)]
+                    if (state.saved and not state.dismissed if view == 'saved' else getattr(state, view))]
         # Workflow history survives closure and source URL corrections/unlinking.
         details = list_job_details(conn, job_ids=selected, include_inactive=True, include_unlinked=True)
     else:
@@ -381,7 +381,7 @@ RESOLVED_INTERACTIONS = INTERACTION_LINEAGE + """, events AS (
 ), latest_signals AS (
     SELECT DISTINCT ON (job_id, signal) * FROM (
         SELECT *, CASE interaction_type WHEN 'unsave' THEN 'save'
-                      WHEN 'unapplied' THEN 'applied' ELSE interaction_type END AS signal
+                      WHEN 'unapplied' THEN 'applied' WHEN 'undismiss' THEN 'dismiss' ELSE interaction_type END AS signal
         FROM events
     ) typed ORDER BY job_id, signal, id DESC
 ) """
@@ -397,6 +397,7 @@ def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
            h.last_interaction_at,
            max(s.created_at) FILTER (WHERE s.interaction_type='save') AS saved_at,
            max(s.created_at) FILTER (WHERE s.interaction_type='applied') AS applied_at,
+           max(s.created_at) FILTER (WHERE s.interaction_type='dismiss') AS dismissed_at,
            h.last_event_id
     FROM latest_signals s JOIN (
         SELECT job_id, max(created_at) AS last_interaction_at, max(id) AS last_event_id
@@ -406,7 +407,7 @@ def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
 
 
 def behavior_history(conn, profile_id):
-    """Bulk-load active weighted signals; inverse events cancel save/apply evidence."""
+    """Bulk-load active weighted signals; inverse events cancel save/apply/dismiss evidence."""
     from .behavioral import BehaviorEvidence, INTERACTION_WEIGHTS
     rows = conn.execute(RESOLVED_INTERACTIONS + """SELECT job_id,
         array_agg(interaction_type ORDER BY interaction_type) AS interaction_types

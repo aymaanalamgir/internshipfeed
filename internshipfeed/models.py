@@ -174,7 +174,7 @@ class MatchResult(BaseModel):
 
 class InteractionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["click", "save", "unsave", "dismiss", "applied", "unapplied"]
+    type: Literal["click", "save", "unsave", "dismiss", "undismiss", "applied", "unapplied"]
 
 
 class RankedMatchResult(MatchResult):
@@ -190,7 +190,7 @@ class JobInteraction(BaseModel):
     id: int = Field(gt=0)
     candidate_profile_id: int = Field(gt=0)
     canonical_job_id: int = Field(gt=0)
-    interaction_type: Literal["click", "save", "unsave", "dismiss", "applied", "unapplied"]
+    interaction_type: Literal["click", "save", "unsave", "dismiss", "undismiss", "applied", "unapplied"]
     created_at: datetime
 
 
@@ -203,6 +203,7 @@ class JobInteractionState(BaseModel):
     last_interaction_at: Optional[datetime] = None
     saved_at: Optional[datetime] = None
     applied_at: Optional[datetime] = None
+    dismissed_at: Optional[datetime] = None
     last_event_id: int = Field(default=0, ge=0)
 
 

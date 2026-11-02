@@ -44,7 +44,7 @@ export function ListingsPage({ workflow, sources, revision, onUpdated, onOpenJob
         <p className="listing-location">{item.job.location}<span>{item.term || 'Term not specified'}</span>{item.job.status === 'unknown' && <span>Availability unconfirmed</span>}</p>
         <div className="listing-controls"><JobActions job={item.job} state={workflow.states[item.job.id] ?? emptyInteraction(item.job.id)}
           pending={workflow.pending[item.job.id]} error={workflow.errors[item.job.id]} onApply={workflow.apply}
-          onSave={(id, type) => void workflow.act(id, type)} onApplied={(id, type) => void workflow.act(id, type)} onDismiss={id => void workflow.act(id, 'dismiss')} /></div>
+          onSave={(id, type) => void workflow.act(id, type)} onApplied={(id, type) => void workflow.act(id, type)} onDismiss={(id, type) => void workflow.act(id, type)} /></div>
       </article>)}</div><div className="collection-footer"><span>Showing {Math.min(limit, visible.length)} of {visible.length}</span>
         {limit < visible.length && <button className="button" onClick={() => setLimit(value => value + 40)}>Show more</button>}</div></>}
   </main>;

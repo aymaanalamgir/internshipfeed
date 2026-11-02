@@ -1,7 +1,7 @@
 # Frontend
 
 InternshipFeed is one React + TypeScript application. Recommended is the home
-experience; All listings is a neutral directory. Saved and Applied retain their
+experience; All listings is a neutral directory. Saved, Applied, and Dismissed retain their
 existing workflow semantics. Profile and job details open in right-side drawers
 over the current view. The old vanilla directory UI has been removed.
 
@@ -21,6 +21,7 @@ npm --prefix frontend run build
 | `/listings` | All listings: search, location/term/source/status filters, chronological order. |
 | `/saved` | Saved and not dismissed; includes saved/applied combinations. |
 | `/applied` | Application history, newest application first. |
+| `/dismissed` | Dismissed history, newest dismissal first, with Restore. |
 | `/profile` | Compatibility entry: Recommended with Profile drawer open. Closing returns the URL to `/`. |
 | `/feed` | Compatibility alias for the React All listings view. |
 
@@ -36,14 +37,14 @@ All UI routes stay on Vite. No router package or global state library is needed.
 
 ## Information architecture and navigation
 
-The restrained top bar contains Recommended, All listings, Saved, Applied, and a
+The restrained top bar contains Recommended, All listings, Saved, Applied, Dismissed, and a
 separate Profile button. Active destinations use a fine orange underline. The
 wordmark returns home. Ordinary destination links load their server-backed view;
 Profile does not navigate, and closing either drawer preserves the underlying
 page, filter input, and browsing context. A successful profile save refreshes the
 current collection so revised recommendations come from the backend.
 
-Recommended/Saved/Applied share `JobCollectionPage` and `RecommendationCard`.
+Recommended/Saved/Applied/Dismissed share `JobCollectionPage` and `RecommendationCard`.
 All listings uses compact `ListingsPage` rows without scores or preference
 explanations. Both surfaces share tags, actions, and the same job drawer. They
 progressively render 24 cards or 40 rows with Show more.
@@ -86,11 +87,12 @@ a compact score, one shortened backend fit reason, a preference reason when
 available, and Why this job? Expanded detail
 shows the backend's separate Profile/Preference/Final scores, at most two behavior
 reasons, and original profile component evidence. React does not score or reorder
-recommendations. Saved/Applied show profile fit; Applied includes its event date
+recommendations. Saved/Applied/Dismissed show profile fit; Applied and Dismissed include their action dates
 and Open application link. Missing metadata is omitted rather than inferred.
 
 `JobActions` fixes action order everywhere: Apply, Save, Applied, Dismiss. Applied
-history omits Dismiss as before. Apply is a native absolute HTTP(S) anchor with
+history omits Dismiss as before. Dismissed jobs instead show a labeled Restore
+control on both cards and details, including dismissed entries in Applied. Apply is a native absolute HTTP(S) anchor with
 `target="_blank"` and `rel="noopener noreferrer"`; click telemetry cannot delay
 navigation and never implies a completed application. Invalid URLs disable Apply.
 
@@ -107,7 +109,13 @@ bookmark appends `unsave`; clicking Applied appends `unapplied`. Accessible labe
 and tooltips announce the inverse action. Shared pending state prevents duplicate
 clicks; failed reversals retain the active state. Unsave removes a card from Saved,
 unmark removes it from Applied, and nondismissed active jobs return to Recommended
-on its next load. Details and background cards share the confirmed snapshot.
+on its next load. Restore appends `undismiss` and removes the card from Dismissed
+only after confirmation, preserving Saved/Applied state and canceling negative
+behavior evidence. Failed/pending restoration keeps the card visible. Details
+and background cards share the confirmed snapshot. Dismissed history includes
+inactive jobs, with availability labels; restoration does not reopen postings.
+The fifth navigation tab scrolls horizontally on narrow screens without widening
+the page.
 
 Collections attach state directly. All listings loads `/api/feed` plus the
 existing `/api/interactions` projection together, showing a retry state if either
@@ -190,7 +198,7 @@ completion. No operational dashboard or backend diagnostics are exposed.
 | `src/lib/profile-options.ts` | Bounded year/term choices and normalized skill comparison. |
 | `src/components/TagInput.tsx` | Editable shared tags and Enter/removal behavior. |
 | `src/components/ResumeUpload.tsx` | Compact upload/replace and persistent latest metadata. |
-| `src/components/RecommendationCard.tsx` | Rich shared Recommended/Saved/Applied card. |
+| `src/components/RecommendationCard.tsx` | Shared Recommended/Saved/Applied/Dismissed card. |
 | `src/components/MatchSummary.tsx` | Compact explanation and expanded backend scores. |
 | `src/components/JobActions.tsx` | Consistent native Apply and confirmed utilities. |
 | `src/components/SkillTag.tsx` | Shared technical tag and optional removal button. |
@@ -198,7 +206,7 @@ completion. No operational dashboard or backend diagnostics are exposed.
 | `src/components/JobDetailsDrawer.tsx` | Metadata, description, keywords, actions, provenance. |
 | `src/components/FilterBar.tsx` | Compact accessible directory controls. |
 | `src/components/SyncControl.tsx` | Existing source-update workflow and status. |
-| `src/pages/JobCollectionPage.tsx` | Three scored server collections. |
+| `src/pages/JobCollectionPage.tsx` | Four scored server collections. |
 | `src/pages/ListingsPage.tsx` | React directory, filtering, details, actions. |
 | `src/hooks/useJobActions.ts` | Shared pending/confirmed snapshot handling. |
 | `src/lib/listings.ts`, `src/lib/navigation.ts` | Directory filter and route helpers. |
@@ -217,7 +225,8 @@ and metadata/suggestion résumé contracts; `db.py` supplies latest metadata.
 `resume_skills.py` detects technical phrases using the enrichment vocabulary and
 matching aliases, with longest-span precedence and deterministic sorted labels.
 Base profile scoring and authentication remain unchanged. Reversible Save/Applied
-actions use migration `008_reversible_interactions.sql` to extend the existing
+actions use migrations `008_reversible_interactions.sql` and
+`011_reversible_dismissals.sql` to extend the existing
 event-type constraint; all workflow state remains derived from event history.
 
 `scripts/check_profile_ui.py`, `scripts/check_ui.py`, and
@@ -239,7 +248,7 @@ npm --prefix frontend run build
 The browser script accepts `--browser-executable /path/to/chromium` and uses an
 isolated schema on the existing PostgreSQL server plus a temporary API process.
 It checks home/navigation, shared drawer/card actions, Saved/Applied combinations,
-refresh persistence, known behavioral ordering, errors/retries, click/new-tab
+refresh persistence, Dismissed/Restore failure and pending behavior, known behavioral ordering, errors/retries, click/new-tab
 safety, profile edits/validation, real PDF extraction, latest-file restoration,
 directory filters/search/details/update progress, keyboard trapping/restoration,
 Escape, and desktop/narrow widths. External application URLs are intercepted

@@ -30,7 +30,7 @@ flowchart TD
     C --> BEHAVIOR
     BEHAVIOR --> RANK
     E --> STATE[SQL-derived candidate state]
-    STATE --> VIEWS[Recommended / Saved / Applied]
+    STATE --> VIEWS[Recommended / Saved / Applied / Dismissed]
     CP[(candidate_profiles)] --> E[(job_interactions)]
     C --> E
     CP --> RES[(resumes: extracted text and metadata)]
@@ -126,13 +126,13 @@ python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
 
 Open **http://127.0.0.1:8000/** for Recommended. All listings is at `/listings`,
-with Saved and Applied in the same compact navigation. Profile opens in a drawer;
+with Saved, Applied, and Dismissed in the same compact navigation. Profile opens in a drawer;
 click a job title for details without leaving the feed. The legacy `/feed` alias
 opens All listings, and `/profile` opens the Profile drawer over Recommended.
 Profile edits and PDF uploads use the backend APIs. Build output is ignored by Git; rebuild
 after frontend changes. [Frontend setup and architecture](docs/frontend.md)
 includes the optional Vite development workflow.
-Saved jobs are at `/saved`, and application history is at `/applied`. Restart
+Saved jobs are at `/saved`, application history at `/applied`, and dismissed jobs at `/dismissed`. Restart
 FastAPI after updating backend routes.
 
 Open **http://localhost:8000/listings** and click **Update listings** to run both enabled
@@ -203,7 +203,8 @@ remain local diagnostics/replay artifacts.
 - `GET /api/recommendations`: eligible jobs ordered by deterministic profile + behavior ranking; unchanged `score`/components, added `profile_score`, `behavior_score`, `final_score`, `behavior_reasons`, and SQL-derived `interaction_state`. Optional `min_score=0..100` still filters profile fit.
 - `GET /api/saved`: saved, nondismissed jobs, including applied jobs; newest save first.
 - `GET /api/applied`: application history, newest applied event first, including closed/dismissed jobs.
-- `POST /api/jobs/{id}/interactions`: append `click`, `save`, `unsave`, `dismiss`, `applied`, or `unapplied` for the development profile; merged IDs resolve to their surviving canonical job.
+- `GET /api/dismissed`: dismissed history, newest dismissal first, with Restore actions.
+- `POST /api/jobs/{id}/interactions`: append `click`, `save`, `unsave`, `dismiss`, `undismiss`, `applied`, or `unapplied` for the development profile; merged IDs resolve to their surviving canonical job.
 - `GET /api/interactions`: effective flags, latest interaction/save/application timestamps, and event cursor, grouped by current canonical job.
 - `GET /api/sources`: configured datasets, including source IDs and enabled state.
 - `GET /api/jobs`: seven-field canonical jobs; optional `source_id` (dataset ID), `source` (repository URL), `status`, and `q` filters.
@@ -324,15 +325,17 @@ state; Recommended uses separate bounded behavioral evidence for ordering.
 Collections and action receipts carry server-derived state, which React consumes
 without replaying events. Click Saved again to unsave, or Applied again to unmark
 it. The latest action in each pair wins, survives refresh, and cancels the
-corresponding preference signal. Dismiss remains one-way. Migration
-`008_reversible_interactions.sql` extends the allowed event types without changing
+corresponding preference signal. Dismissed jobs have a **Restore** action that
+appends `undismiss`, removes them from Dismissed, and cancels negative dismissal
+evidence. Saved/Applied flags stay intact; active jobs return to discovery when
+not applied. Migrations `008_reversible_interactions.sql` and
+`011_reversible_dismissals.sql` extend the allowed event types without changing
 historical rows or adding state columns.
 See [docs/interactions.md](docs/interactions.md) for contracts and exact semantics.
 Dismissed/applied jobs are also excluded from normal `/api/jobs` and `/api/feed`
-discovery; the underlying canonical records remain stored. Saved/Applied history
+discovery; the underlying canonical records remain stored. Saved/Applied/Dismissed history
 retains closed, dead, and unlinked jobs. Global ingestion/reconciliation counts
-remain source-level operational records. Résumé-to-profile suggestions and
-authentication are future work.
+remain source-level operational records. Authentication is future work.
 
 ## Tests
 

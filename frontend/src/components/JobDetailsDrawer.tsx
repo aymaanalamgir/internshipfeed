@@ -33,7 +33,7 @@ export function JobDetailsDrawer({ id, onClose, workflow, sources, view }: { id:
         <JobActions job={job} state={workflow.states[job.id] ?? workflow.states[id] ?? emptyInteraction(job.id)}
           pending={workflow.pending[job.id]} error={workflow.errors[job.id]} appliedView={view === 'applied'}
           onApply={workflow.apply} onSave={(jobId, type) => void workflow.act(jobId, type)} onApplied={(jobId, type) => void workflow.act(jobId, type)}
-          onDismiss={jobId => void workflow.act(jobId, 'dismiss').then(success => { if (success) onClose(); })} />
+          onDismiss={(jobId, type) => void workflow.act(jobId, type).then(success => { if (success) onClose(); })} />
         {provenance.length > 0 && <p className="provenance">Listed by {provenance.map((source, index) => <span key={source.source_id}>
           {index > 0 && ' · '}<a href={applicationUrl(source.source) ?? undefined} target="_blank" rel="noopener noreferrer">
             {sources.find(item => item.id === source.source_id)?.name ?? source.source.split('/').filter(Boolean).slice(-2).join(' / ')}</a></span>)}</p>}
