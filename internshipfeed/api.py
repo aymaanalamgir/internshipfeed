@@ -1,10 +1,8 @@
 """Database-backed API and the small static jobs UI."""
 import logging
-import os
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from dotenv import set_key
 from typing import List, Literal, Optional
 
 import psycopg
@@ -14,9 +12,9 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db
 from .models import JobListing
-from .ai import settings
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
+from .sources import SOURCES
 
 logger = logging.getLogger(__name__)
 @asynccontextmanager
@@ -43,10 +41,16 @@ def connection():
         raise HTTPException(status_code=503, detail="Job storage is unavailable. Please try again later.")
 
 
+@app.get("/api/sources")
+def sources():
+    return [{"key": source.key, "name": source.name, "url": source.url} for source in SOURCES]
+
+
 @app.get("/api/jobs", response_model=List[JobListing])
 def jobs(status: Optional[Literal["open", "closed", "unknown"]] = None,
-         q: Optional[str] = Query(default=None, max_length=200), conn=Depends(connection)):
-    return db.list_jobs(conn, status=status, query=q)
+         q: Optional[str] = Query(default=None, max_length=200),
+         source: Optional[str] = None, conn=Depends(connection)):
+    return db.list_jobs(conn, status=status, query=q, source=source)
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobListing)
@@ -87,33 +91,6 @@ def sync_progress(run_id: UUID, conn=Depends(connection)):
     if report is None:
         raise HTTPException(404, "Sync not found")
     return report
-
-
-@app.get("/api/settings/ai")
-def ai_settings():
-    return settings()
-
-
-@app.post("/api/settings/ai")
-async def save_ai_settings(request: Request, conn=Depends(connection)):
-    local_mutation(request)
-    try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(422, "Provide a Google AI Studio API key.")
-    key = payload.get("api_key") if isinstance(payload, dict) else None
-    if not isinstance(key, str) or not 20 <= len(key.strip()) <= 500:
-        raise HTTPException(422, "Provide a valid Google AI Studio API key.")
-    if payload.get("free_tier_confirmed") is not True:
-        raise HTTPException(422, "Use a Google project on the Free tier with billing disabled.")
-    if not conn.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (SYNC_LOCK,)).fetchone()["acquired"]:
-        raise HTTPException(409, "Wait for the current sync to finish before changing AI settings.")
-    try:
-        set_key(str(db.ROOT / ".env"), "GEMINI_API_KEY", key.strip())
-        os.environ["GEMINI_API_KEY"] = key.strip()
-    finally:
-        conn.execute("SELECT pg_advisory_unlock(%s)", (SYNC_LOCK,))
-    return settings()
 
 
 @app.get("/api/health")

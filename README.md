@@ -1,615 +1,148 @@
-Problem Statement: Canadian students are often looking for jobs through co-op portals and externally through career pages and social media platforms such as LinkedIn. Students are having to apply to jobs that are not suited towards their strengths and finding that relevant opportunities have inaccessible/hidden postings. InternshipFeed consolidates internship postings into one searchable feed and uses a student-controlled candidate profile and past interactions to explain why specific jobs may be relevant.
+# InternshipFeed
 
-![InternshipFeed System Architecture](InternshipFeed System Architecture Diagram.png)
-
-## CHAT GPT System Architecture
-
-InternshipFeed is designed as a modular monolith with a clear data pipeline from external internship sources to a personalized user feed.
-
-The system separates source-specific ingestion from normalized application data so that multiple upstream sources can be supported without changing the rest of the platform.
+InternshipFeed collects internship listings from GitHub repositories into one
+searchable feed. Each source has its own parser, while normalization, PostgreSQL
+storage, description extraction, and the API are shared.
 
 ```mermaid
 flowchart TD
-
-    %% -------------------------
-    %% External Sources
-    %% -------------------------
-
-    A1[GitHub Internship Repositories]
-    A2[Public ATS / Career APIs]
-    A3[Permitted Career Pages]
-
-    %% -------------------------
-    %% Ingestion Layer
-    %% -------------------------
-
-    B1[Source Fetchers]
-    B2[Source-Specific Parsers]
-
-    A1 --> B1
-    A2 --> B1
-    A3 --> B1
-
-    B1 --> B2
-
-    %% -------------------------
-    %% Raw / Source Data Layer
-    %% -------------------------
-
-    C1[(Source Snapshots)]
-    C2[(Source Job Records)]
-
-    B1 --> C1
-    B2 --> C2
-
-    %% -------------------------
-    %% Transformation
-    %% -------------------------
-
-    D1[Normalizer]
-    D2[Deduplication / Reconciliation]
-
-    C2 --> D1
-    D1 --> D2
-
-    %% -------------------------
-    %% Main Database
-    %% -------------------------
-
-    E1[(PostgreSQL)]
-    E2[Normalized Job Postings]
-    E3[Candidate Profiles]
-    E4[User Interactions]
-    E5[Ingestion Runs]
-
-    D2 --> E2
-    E2 --> E1
-    E3 --> E1
-    E4 --> E1
-    E5 --> E1
-
-    %% -------------------------
-    %% Resume Pipeline
-    %% -------------------------
-
-    F1[Résumé Upload]
-    F2[PDF Text Extraction]
-    F3[Profile Extraction]
-    F4[User Review / Correction]
-
-    F1 --> F2
-    F2 --> F3
-    F3 --> F4
-    F4 --> E3
-
-    %% -------------------------
-    %% Backend
-    %% -------------------------
-
-    G1[FastAPI Backend]
-    G2[Search & Filtering]
-    G3[Matching / Ranking]
-    G4[Interaction Service]
-
-    E1 --> G1
-
-    G1 --> G2
-    G1 --> G3
-    G1 --> G4
-
-    E2 --> G2
-    E2 --> G3
-    E3 --> G3
-    E4 --> G3
-
-    G4 --> E4
-
-    %% -------------------------
-    %% Frontend
-    %% -------------------------
-
-    H1[React Frontend]
-    H2[Internship Feed]
-    H3[Search / Filters]
-    H4[Job Details]
-    H5[Candidate Profile]
-
-    G1 --> H1
-
-    H1 --> H2
-    H1 --> H3
-    H1 --> H4
-    H1 --> H5
-
-    %% -------------------------
-    %% User Actions
-    %% -------------------------
-
-    I1[Save]
-    I2[Dismiss]
-    I3[Click]
-    I4[Applied]
-
-    H2 --> I1
-    H2 --> I2
-    H4 --> I3
-    H4 --> I4
-
-    I1 --> G4
-    I2 --> G4
-    I3 --> G4
-    I4 --> G4
-
-    %% -------------------------
-    %% Future Infrastructure
-    %% -------------------------
-
-    J1[Kafka / Event Streaming]
-    J2[Elasticsearch]
-    J3[Advanced Recommendation Models]
-
-    E4 -. future .-> J1
-    G2 -. future .-> J2
-    G3 -. future .-> J3
+    A[Canadian Tech Internships README] --> F[HTTP fetcher + source snapshots]
+    B[Simplify Internships README] --> F
+    F --> P1[Canadian Markdown parser]
+    F --> P2[Simplify HTML-table parser]
+    P1 --> R[SourceJobRecord]
+    P2 --> R
+    R --> N[normalize]
+    N --> J[JobListing]
+    J --> E[Optional description extraction + keyword matching]
+    E --> DB[(PostgreSQL: jobs)]
+    DB --> API[FastAPI]
+    API --> UI[Searchable jobs UI]
+    UI --> S[Background sync]
+    S --> F
+    S --> RUNS[(Ingestion runs + per-source counts)]
 ```
 
-### Data Flow
-
-The primary workflow is:
+The main transformation is:
 
 ```text
-External internship sources
-        ↓
-Fetch raw source data
-        ↓
-Preserve source snapshot
-        ↓
-Parse source-specific job records
-        ↓
-Normalize into common schema
-        ↓
-Deduplicate and reconcile
-        ↓
-Store in PostgreSQL
-        ↓
-Expose through FastAPI
-        ↓
-Search, filter and rank
-        ↓
-Display personalized feed in React
+Source A ──> Canadian parser ──┐
+                              ├──> SourceJobRecord ──> normalize() ──> JobListing
+Source B ──> Simplify parser ──┘                                       │
+                                                              common jobs table
 ```
 
-The candidate workflow runs alongside the job-ingestion pipeline:
+## Sources
+
+| Key | Repository | Format |
+| --- | --- | --- |
+| `canadian-tech` | [negarprh/Canadian-Tech-Internships-2027](https://github.com/negarprh/Canadian-Tech-Internships-2027) | `main/README.md`: Markdown table |
+| `simplify` | [SimplifyJobs/Summer2027-Internships](https://github.com/SimplifyJobs/Summer2027-Internships) | `dev/README.md`: category HTML tables |
+
+The supplied [Summer2026 repository link](https://github.com/SimplifyJobs/Summer2026-Internships)
+currently redirects to Summer2027. The second source follows the current main
+README reached by that link. The historical 2026 list is a separate
+[`archived/README-2026.md`](https://github.com/SimplifyJobs/Summer2027-Internships/blob/dev/archived/README-2026.md)
+file and is not imported by default. The parser reads the term from the document
+heading rather than hardcoding a year.
+
+Simplify includes international listings. Importing it does not imply that every
+job is located in Canada. The UI shows source labels and an All sources filter.
+
+## Architecture and module boundaries
+
+- `fetch.py`: shared HTTP transport, timeouts, retries, and response-size limits.
+- `sources/__init__.py`: registry of source names, URLs, and parser callables.
+- `source.py`: Canadian source parser; handles Markdown badges, closed markers, and inherited company names.
+- `sources/simplify.py`: Simplify parser; handles multiple HTML tables, inherited company names, location details, application links, companion IDs, and relative ages.
+- `records.py`: source-neutral `SourceJobRecord` intermediate representation.
+- `normalize.py`: one transformation used by both parsers; returns a validated `JobListing`.
+- `models.py`: common application schema and keyword groups.
+- `enrich.py`: optional readable description extraction and deterministic keyword matching.
+- `db.py`, `migrations/`: common PostgreSQL repository and schema setup.
+- `ingestion.py`: multi-source orchestration, source isolation, snapshots, deduplication, and run reporting.
+- `sync.py`: background execution guarded by a PostgreSQL session lock.
+- `api.py`: database-backed API and static UI hosting.
+- `cli.py`: optional command-line wrapper around the same workflow used by the UI.
+- `dev_db.py`: optional local development PostgreSQL launcher.
+
+Fetching, parsing, normalization, enrichment, and persistence stay separate. A new
+repository needs a parser and a registry entry, rather than another database table
+or API-specific schema. Source-specific rules do not belong in the shared normalizer.
+
+The project is a modular monolith. PostgreSQL remains the system of record;
+a separate message broker, search service, and distributed workers are not needed
+for this stage. Candidate profiles, saved/applied interactions, and explainable
+matching can be added later on top of the common job repository.
+
+## Common job schema
+
+Both sources produce the same `JobListing`:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Database-generated integer primary key |
+| `company`, `title`, `location` | Required listing text |
+| `url` | Actual application URL, nullable if unavailable |
+| `last_known_url` | Previously seen application URL retained when a source removes it |
+| `source` | Canonical source repository URL |
+| `external_id` | Stable identity within that source |
+| `posted_at` | Exact posting date if provided; otherwise `null` |
+| `term` | Explicit season/year from the title, or source-provided term context |
+| `status` | `open`, `closed`, `unknown`, or confirmed `dead` |
+| `description` | Extracted original job text, nullable |
+| `keywords` | Languages, frameworks, tools/platforms, concepts, and requirement lines |
+| `enrichment_status`, `enrichment_error` | Description-fetch outcome |
+| `extraction_method`, `resolved_url`, `enriched_at` | Description provenance |
+| `link_checked_at` | Most recent application-page fetch attempt |
+| `snapshot_id`, `source_line` | Source lineage |
+| `first_seen_at`, `last_seen_at` | Observation timestamps |
+
+### Source-specific normalization
+
+The Canadian README supplies full dates such as `Oct 30, 2026`; these become
+`posted_at = 2026-10-30`. Its `↳` rows inherit the previous company name. Nested
+badge links resolve to the outer application link.
+
+Simplify typically supplies relative ages such as `2d`. These remain in raw source
+records; they are **not** converted into a guessed exact posting date. Yearless
+dates are also left as `posted_at = null`. The parser prefers the employer's
+application link over the companion Simplify link. If only a Simplify application
+link exists, it is retained. A `<details>` location cell becomes a readable list
+of actual locations, excluding the summary text such as “9 locations”. Company
+inheritance resets at category table boundaries.
+
+Term information in a title takes precedence over source context. Missing terms
+are not inferred from unrelated information.
+
+### Deduplication and reconciliation
+
+The `jobs` table has a unique constraint on `(source, external_id)`. Repeated and
+concurrent ingestion cannot create duplicate rows for the same source identity.
+
+The Canadian source has no durable upstream ID, so its identity uses source,
+company, title, location, and posting date. Status and application URL are excluded
+because the source removes URLs on closure. Existing Canadian identities are
+preserved by this change.
+
+Simplify companion `/p/<id>` links provide a stable identifier when present.
+Otherwise a deterministic fingerprint uses source, company, title, location, and
+any exact date. Relative ages are excluded, so a change from `2d` to `3d` does not
+create a new job.
+
+Both sources write to one `jobs` table. Source provenance remains explicit; a job
+listed by both repositories can have one record per source. Cross-source entity
+merging is a separate future reconciliation step, rather than an assumption that
+similar company/title text proves two records describe the same opportunity.
 
-```text
-Résumé PDF
-    ↓
-Text extraction
-    ↓
-Candidate profile extraction
-    ↓
-User correction
-    ↓
-Structured candidate profile
-    ↓
-Matching engine
-    ↓
-Explainable internship ranking
-```
+Updates preserve `id`, `first_seen_at`, and previously extracted descriptions if
+a later description fetch fails or is skipped. Missing rows are retained and are
+not automatically marked closed. Source corrections to fingerprint fields can
+produce a new identity.
 
-User interactions create another feedback loop:
+## Running locally
 
-```text
-View job
-   ↓
-save / dismiss / click / applied
-   ↓
-interaction history
-   ↓
-PostgreSQL
-   ↓
-matching signals
-   ↓
-future feed ranking
-```
-
----
-
-## Architecture Layers
-
-### 1. Source Layer
-
-InternshipFeed can consume multiple upstream sources.
-
-Initial sources include public GitHub repositories such as:
-
-- `negarprh/Canadian-Tech-Internships-2027`
-- `SimplifyJobs/Summer2027-Internships`
-
-Future sources may include public applicant-tracking-system APIs or permitted company career pages.
-
-Each source can have a different schema, so source-specific logic is isolated from the rest of the application.
-
----
-
-### 2. Ingestion Layer
-
-The ingestion layer is responsible for retrieving external data.
-
-Its responsibilities include:
-
-- fetching repository files or API responses
-- recording ingestion attempts
-- handling network failures
-- preserving the original upstream representation
-- preventing repeated ingestion from creating duplicate data
-
-Fetching is deliberately kept separate from parsing and normalization.
-
----
-
-### 3. Raw Data and Lineage
-
-InternshipFeed preserves upstream data before transforming it.
-
-A source snapshot represents the exact state of an upstream dataset at a particular point in time.
-
-For example:
-
-```text
-GitHub README
-      ↓
-source snapshot
-      ↓
-parsed source records
-      ↓
-normalized jobs
-```
-
-This allows the system to:
-
-- debug parsing problems
-- reprocess historical data
-- detect upstream changes
-- trace normalized jobs back to their source
-- compare previous and current source states
-
----
-
-### 4. Source-Specific Parsing
-
-Each external source is parsed independently.
-
-For example:
-
-```text
-Canadian Tech Internships Parser
-            ↓
-       SourceJobRecord
-```
-
-and:
-
-```text
-Simplify Internships Parser
-            ↓
-       SourceJobRecord
-```
-
-Both parsers output a shared intermediate representation.
-
-This prevents source-specific formatting rules from leaking into the rest of the system.
-
-Examples of source-specific behaviour include:
-
-- inherited company names such as `↳`
-- Markdown application links
-- closed-job markers
-- different date formats
-- different table columns
-
----
-
-### 5. Normalization
-
-The normalization layer converts source records into InternshipFeed's common job schema.
-
-For example:
-
-```text
-Source A:
-
-Company: Autodesk
-Role: Software Development Internship
-Location: Toronto, ON
-Apply: ...
-```
-
-and:
-
-```text
-Source B:
-
-Employer: Autodesk
-Title: Software Developer Intern
-City: Toronto
-URL: ...
-```
-
-can both become:
-
-```text
-JobPosting
-
-company_name
-title
-location_text
-apply_url
-date_posted
-status
-source
-first_seen_at
-last_seen_at
-```
-
-This gives downstream systems one consistent representation regardless of where the job originated.
-
----
-
-### 6. Deduplication and Reconciliation
-
-InternshipFeed handles two different duplicate problems.
-
-#### Within-source duplicates
-
-The same upstream job should not be inserted repeatedly every time ingestion runs.
-
-Stable identifiers, application URLs, hashes and database uniqueness constraints are used to make ingestion idempotent.
-
-```text
-same source job fetched twice
-            ↓
-same normalized job
-```
-
-#### Cross-source duplicates
-
-The same real-world internship may appear in multiple upstream repositories.
-
-For example:
-
-```text
-GitHub Source A
-Autodesk — Software Developer Intern
-                   \
-                    → Canonical opportunity
-                   /
-GitHub Source B
-Autodesk — Software Engineering Intern
-```
-
-Cross-source deduplication can later use signals such as:
-
-- application URL
-- company
-- normalized title
-- location
-- posting date
-
-The MVP begins with deterministic rules before introducing fuzzy matching.
-
----
-
-### 7. PostgreSQL
-
-PostgreSQL is the primary system of record.
-
-It stores data such as:
-
-```text
-job_sources
-ingestion_runs
-source_snapshots
-source_job_records
-job_postings
-candidate_profiles
-resumes
-job_interactions
-```
-
-PostgreSQL is also used initially for:
-
-- uniqueness constraints
-- transactional updates
-- filtering
-- indexing
-- full-text search
-
-External systems such as Elasticsearch are deferred until PostgreSQL search becomes an identified limitation.
-
----
-
-### 8. FastAPI Backend
-
-FastAPI exposes application functionality to the frontend.
-
-Initial endpoints may include:
-
-```text
-GET    /jobs
-GET    /jobs/{id}
-
-POST   /resumes
-GET    /profile
-PUT    /profile
-
-POST   /jobs/{id}/save
-POST   /jobs/{id}/dismiss
-POST   /jobs/{id}/applied
-POST   /jobs/{id}/click
-```
-
-The API layer does not contain source-specific ingestion logic.
-
-Instead it works with normalized application data.
-
----
-
-### 9. Résumé and Candidate Profile Pipeline
-
-Users can upload a résumé as a PDF.
-
-The document pipeline performs:
-
-```text
-PDF
- ↓
-text extraction
- ↓
-structured profile proposal
- ↓
-user review
- ↓
-candidate profile
-```
-
-The system may extract fields such as:
-
-- skills
-- target roles
-- graduation date
-- preferred locations
-- education
-- experience keywords
-
-Extracted values are treated as suggestions rather than unquestionable facts.
-
-Users can correct their profile before it is used for matching.
-
----
-
-### 10. Matching and Ranking
-
-The MVP uses deterministic and explainable matching.
-
-Potential signals include:
-
-```text
-target-role match
-skill overlap
-location preference
-internship term
-graduation eligibility
-previous interactions
-```
-
-Rather than producing an unexplained machine-learning score, InternshipFeed should be able to provide reasons such as:
-
-```text
-Recommended because:
-
-• role matches Software Engineering
-• posting is located in Toronto
-• job mentions Python and SQL
-```
-
-More advanced recommendation models can be introduced later if sufficient interaction data exists.
-
----
-
-### 11. User Interaction Events
-
-Users can interact with jobs by:
-
-```text
-saving
-dismissing
-clicking
-marking as applied
-```
-
-These actions are stored as interaction records rather than directly modifying recommendation logic.
-
-This provides a historical event stream that can later be used for:
-
-- recommendation improvements
-- analytics
-- behavioural features
-- event-stream processing
-
----
-
-## Future Evolution
-
-The MVP intentionally avoids distributed infrastructure.
-
-The initial architecture is:
-
-```text
-React
-  ↓
-FastAPI
-  ↓
-PostgreSQL
-```
-
-with ingestion running as a simple scheduled process.
-
-Technologies such as Kafka, Elasticsearch and advanced recommendation models are introduced only after the system contains a problem that justifies them.
-
-Potential evolution:
-
-```text
-                    ┌──────────── Kafka ────────────┐
-                    │                               │
-User Interactions ──┼→ analytics consumers         │
-                    ├→ recommendation consumers     │
-                    └→ monitoring / event consumers │
-```
-
-Search may later evolve from:
-
-```text
-PostgreSQL Full-Text Search
-```
-
-to:
-
-```text
-Elasticsearch
-```
-
-if requirements such as typo tolerance, advanced relevance ranking or large-scale search justify the additional infrastructure.
-
----
-
-## Design Principles
-
-InternshipFeed follows several architectural principles:
-
-- preserve raw data before transforming it
-- make ingestion idempotent
-- enforce correctness with database constraints
-- isolate source-specific behaviour
-- prefer simple infrastructure first
-- keep components independently understandable
-- make failures observable
-- maintain data lineage
-- use explainable recommendation logic
-- introduce distributed systems only when a concrete limitation exists
-
-The goal is not to simulate unnecessary production complexity, but to build a system that can evolve naturally as new engineering requirements appear.
-## Running InternshipFeed
-
-The implemented pipeline is **GitHub README → snapshot → source records → validated
-JobListing → PostgreSQL → FastAPI → jobs UI**. The UI lists active jobs and opens a detail view with descriptions and AI overviews.
-Use **Sync & enrich** to fetch the repository, read application pages, analyze
-descriptions, and persist results in one background workflow. No ingestion command
-is needed after the app is running.
-
-### Setup
-
-Python 3.9+ and PostgreSQL are required. From the project root:
+Requires Python 3.9+ and PostgreSQL. From the project root:
 
 ```sh
 python3 -m venv .venv
@@ -618,255 +151,134 @@ python -m pip install --upgrade pip
 python -m pip install -e '.[test]'
 ```
 
-For Docker users, start PostgreSQL 16 and configure the connection (copy the
-example only if you have not already configured `.env`):
+For Docker users:
 
 ```sh
 docker compose up -d --wait
+# Copy only if you have not already configured .env.
 cp .env.example .env
 ```
 
-Alternatively, set `DATABASE_URL` in `.env` or the environment to an existing
-PostgreSQL database. Environment variables take precedence.
+Or set `DATABASE_URL` to an existing PostgreSQL database. Environment variables
+take precedence over `.env`.
 
-For development without Docker/PostgreSQL, the optional launcher runs an actual
-PostgreSQL server from bundled binaries:
+Without Docker or an installed PostgreSQL service, use the development launcher:
 
 ```sh
 python -m pip install -e '.[local-postgres]'
 python -m internshipfeed.dev_db
 ```
 
-Keep that terminal running. On first launch it writes a local connection URL to
-`.env` if the file does not exist. An existing `.env` is preserved; configure its
-`DATABASE_URL` to the printed local URL if needed. Database files are retained in
-`data/postgres`; Ctrl+C stops the server. On macOS/Linux it uses a Unix socket.
-This launcher is for local development; use a separately administered PostgreSQL
-service for deployments.
+Keep that terminal running. The launcher retains database files in `data/postgres`
+and writes a local connection URL to `.env` only if that file does not exist.
+An existing configuration is preserved. Ctrl+C stops the server. This launcher is
+for development; deployments should use an independently administered database.
 
-In another terminal with the virtual environment activated:
+In another terminal with the environment activated:
 
 ```sh
-# Create tables (idempotent; ingestion also does this automatically).
 python -m internshipfeed.db
-
-# Fetch and persist listings.
-python -m internshipfeed
-
-# Serve API and UI together.
 python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
 
-Open **http://localhost:8000**. Click **Sync & enrich** to import all listings and automatically enrich open jobs.
-Progress and counts appear in the UI; the feed reloads after completion.
-Search/filter listings and click a role for details. **Refresh** only reloads saved jobs. FastAPI serves UI and API from the same
-origin. The old `python -m http.server` command no longer serves a working jobs
-feed. Run the app from a source checkout containing `index.html` and `web/`.
+Open **http://localhost:8000** and click **Sync & enrich**. One action imports both
+repositories, normalizes their rows, and reads available descriptions. Progress
+and per-source counts appear in the UI. Refresh reloads saved database records.
+The app needs the source checkout's `index.html` and `web/` files.
 
-To reprocess a saved snapshot without downloading GitHub:
+Optional CLI workflows:
 
 ```sh
-python -m internshipfeed --input data/snapshots/<sha256>.md
+# Both sources, with description extraction.
+python -m internshipfeed
+
+# Both sources, listing metadata only.
+python -m internshipfeed --no-enrich
+
+# Just one source.
+python -m internshipfeed --source simplify --no-enrich
+
+# Reprocess a saved snapshot for a specified source.
+python -m internshipfeed --source simplify --input path/to/README.md --no-enrich
 ```
 
-### Shared model and database
+`--input` without `--source` preserves the original Canadian-source replay behavior.
+For a multi-source replay in Python, pass `input_paths={"canadian-tech": path_a,
+"simplify": path_b}` to `run_ingestion()`. `--enrich-limit` optionally caps page
+attempts across a run; the default has no limit. `--delay` sets the delay between
+attempts, and `--refresh-descriptions` bypasses the 24-hour description cache.
 
-`internshipfeed/models.py` defines a validated Pydantic `JobListing`. Ingestion,
-PostgreSQL reads, and API responses use the same contract:
+## Description extraction
 
-| Field | Meaning |
-| --- | --- |
-| `id` | Database-generated integer primary key |
-| `company`, `title`, `location` | Required listing text |
-| `url` | Current application URL; nullable for closed/missing links |
-| `last_known_url` | Most recently seen application URL, retained on closure |
-| `source` | Source repository URL |
-| `external_id` | Deterministic source-specific identity fingerprint |
-| `posted_at` | Posting date, stored as PostgreSQL `DATE`; nullable |
-| `term` | Explicit season/year from the title; nullable |
-| `status` | `open`, `closed`, `unknown`, or confirmed `dead` |
-| `link_checked_at` | Last application-page fetch attempt |
-| `ai_analysis` | Overview plus requirements, preferred qualifications, tech stack, frameworks, and responsibilities, each with source evidence |
-| `ai_status`, `ai_error` | AI outcome; missing configuration and quota failures are explicit |
-| `ai_model`, `ai_description_hash`, `ai_prompt_version`, `ai_enriched_at` | Cached AI provenance |
-| `description` | Extracted job description; nullable |
-| `keywords` | Languages, frameworks, tools/platforms, concepts, and requirement lines |
-| `enrichment_status`, `enrichment_error` | Outcome of the latest attempted enrichment |
-| `extraction_method`, `resolved_url`, `enriched_at` | Provenance of the retained description |
-| `snapshot_id`, `source_line` | Source lineage |
-| `first_seen_at`, `last_seen_at` | Database observation timestamps in UTC |
-
-`internshipfeed/migrations/001_jobs.sql` creates `jobs` and `ingestion_runs`.
-Jobs have a database **unique constraint on `(source, external_id)`**, so
-concurrent ingestions cannot insert multiple rows for the same identity.
-
-The source has no durable upstream job ID. Its fingerprint uses source, company,
-title, location, and posting date. URL/status are excluded because links disappear
-on closure. Reruns refresh listing content, source lineage, and `last_seen_at`;
-`id` and `first_seen_at` remain stable. Source corrections to identity fields
-produce a new identity. This is within-source deduplication; cross-source
-reconciliation remains a future step. Jobs missing from later snapshots remain
-stored, and absence alone does not mark them closed.
-
-Successful enrichment replaces description/keywords. Ordinary reruns and failed
-enrichment attempts preserve existing descriptions and their provenance. An
-attempted failure updates enrichment status/error; if enrichment is not attempted,
-the existing status is preserved. Legacy `data/jobs.json` files are no longer
-written or read by the UI.
-
-### Description enrichment
-
-The source is
-[negarprh/Canadian-Tech-Internships-2027](https://github.com/negarprh/Canadian-Tech-Internships-2027),
-read from `main/README.md`. Parsing handles nested application badges, inherited
-company names (`↳`), and closed markers. Terms are populated only when explicit
-in the title. `url` is the application URL, not the badge image URL. Status
-reflects the repository rather than an independent check of the application page.
-
-Description enrichment is automatic and checks robots.txt and fetches public pages with timeouts, bounded
-responses, retries, and a default one-second delay between listings. It first
-extracts a single JSON-LD `JobPosting` description, then tries readable
+Description extraction checks robots.txt and reads public application pages.
+It first looks for a single JSON-LD `JobPosting` description, then tries readable
 `main`/`article` HTML with recognizable job sections. JavaScript-only pages,
-access restrictions, and ambiguous pages can prevent extraction. Outcomes are
-recorded and never imply that a job has closed.
+access restrictions, and ambiguous pages may remain unavailable.
 
-The explicit vocabulary in `enrich.py` finds technology mentions. Requirement
-lines come from recognizable qualification/requirement sections. Mentions are
-not proof that a skill is mandatory, and the vocabulary is not exhaustive.
-The detail view displays the extracted text, AI analysis, and keyword groups.
-There is no default enrichment limit. The optional CLI `--enrich-limit` explicitly
-bounds attempts; `--no-enrich` disables page fetching for debugging. Unavailable
-descriptions are not invented.
+Keyword extraction uses the explicit vocabulary and qualification-section rules
+in `enrich.py`. Matches represent mentions, not proof that every technology is
+mandatory. The original description remains available for inspection.
 
-### Google AI transformation
+Closed source rows are saved for lineage but hidden from the feed and detail API.
+They do not trigger application-page requests. HTTP 404/410 from an application
+page marks the link `dead` and hides the listing; a recent dead check is reused for
+24 hours. Timeouts, blocked requests, and unreadable pages do not prove closure.
+Not every expired HTTP-200 page can be detected.
 
-Open **AI settings** in the UI, get a key from
-[Google AI Studio](https://aistudio.google.com/apikey), and save it once. Use a
-Google project on the **Free tier with billing disabled**. Gemini 2.5 Flash-Lite
-currently offers free input/output on that tier; a billing-enabled project can
-incur charges. The app cannot verify Google's billing settings and has no paid
-provider/model fallback. See [Google pricing](https://ai.google.dev/gemini-api/docs/pricing)
-and [project-specific limits](https://ai.google.dev/gemini-api/docs/rate-limits).
-Free-tier content may be used by Google to improve its products. Only public job
-descriptions are sent; no candidate profiles or resumes are sent by this workflow.
+## Observability and failure isolation
 
-The key is stored server-side in ignored `.env` as `GEMINI_API_KEY`; it is never
-returned by the API or stored in browser storage. The fixed model is
-`gemini-2.5-flash-lite`. No OpenAI key or SDK is required. Without a Google key,
-sync still imports jobs and reads descriptions, with explicit `not_configured`
-AI status. A saved key is not a guarantee of model access; provider rejections
-are visible in job details and sync counters.
+Each run stores overall and per-source counters for scraped, processed, inserted,
+updated, duplicate, and failed rows, plus description outcomes and closed/dead
+counts. Each source report includes its snapshot ID, README URL, outcome, and
+source-specific error if applicable.
 
-The small transformation requests structured JSON containing an overview,
-mandatory requirements, preferred qualifications, technologies, frameworks,
-and responsibilities. Every list item includes a source quote. Responses are
-validated against the schema and quotes checked against the original description.
-These checks do not prove the AI interpretation is correct; review the retained
-source text. Invalid/incomplete responses are discarded. The description remains
-unchanged. Authentication/schema errors or quota limits pause further AI requests
-for that sync; there is no automatic billing upgrade. API calls are paced at a
-minimum of seven seconds apart, but quotas still depend on the Google project.
-Retry another sync later to process descriptions whose AI analysis is missing.
+A fetch/parse failure in one repository does not prevent the other source from
+being imported. Row validation/storage failures do not roll back other committed
+jobs. A run with a failed source or row exits with code 1; successfully imported
+jobs remain available.
 
-Successful descriptions are reused for 24 hours, and AI results are reused when
-description hash, model, and prompt version match. Changed descriptions invalidate
-old AI analysis. Quota failures preserve valid cached results. `--refresh-descriptions`
-can force page fetching in the optional CLI; it does not repeat matching AI work.
+For parsed rows, `scraped = inserted + updated + skipped_duplicates + failed`.
+Source failures that occur before parsing are counted separately in
+`source_failures`, since the number of missing jobs is unknown.
 
-### Closed and dead links
+Generated artifacts (ignored by Git):
 
-Closed source rows are saved for lineage but **excluded from the feed and detail
-API**, with no page fetch or AI call. HTTP **404/410 from the actual application
-page** marks a listing `dead` and hides it too. A recent dead-link check is cached
-for 24 hours; normal syncs recheck older dead links. Successful reads can restore
-an open listing. Timeouts, robots restrictions, 403/429 responses, and JavaScript
-shells do not prove a job is dead and do not remove it. This does not detect every
-expired HTTP-200 application page.
+- `data/snapshots/<sha256>.md`: exact retained source content.
+- `data/source_records.json`: both parsers' common records with source provenance.
+- `data/run.json`: latest local run report.
+- `data/runs/<uuid>.json`: local run history.
 
-### Observability
+Run reports also live in PostgreSQL `ingestion_runs`. A global database lock prevents
+overlapping UI/CLI syncs. Interrupted runs are marked failed on restart.
 
-Every ingestion prints a JSON summary, for example:
+## API
 
-```json
-{"status":"success","scraped":508,"inserted":492,"updated":0,"skipped_duplicates":16,"failed":0,"enrichment_failed":0}
-```
-
-- `scraped`: parsed source rows, including repeated rows.
-- `inserted`: new database jobs committed successfully.
-- `updated`: existing jobs whose listing content changed, including new descriptions.
-- `skipped_duplicates`: repeated source rows or existing jobs with unchanged content. Observation timestamps/lineage still refresh for existing jobs.
-- `failed`: rows that could not be validated or stored, with source line errors.
-- `enrichment_attempts`, `enrichment_successes`, `enrichment_failed`: separate description-fetch counters in the full report. An unavailable description does not fail an otherwise valid listing.
-
-After parsing, `scraped = inserted + updated + skipped_duplicates + failed`.
-Fetch/parse failures are recorded at run level when no rows can be parsed.
-Each job write is transactional; a bad record does not roll back successful jobs.
-Partial failures, connection failures, and report-persistence failures exit with
-code 1.
-
-Reports are stored in `ingestion_runs`, `data/run.json`, and
-`data/runs/<uuid>.json`. If PostgreSQL is unavailable, local reports still capture
-the failure. Raw snapshots are retained in `data/snapshots/<sha256>.md`, and source
-rows in `data/source_records.json`. Generated data and `.env` are excluded from Git.
-
-### API
-
-- `GET /api/jobs`: database jobs, newest posting date first. Optional `status` and `q` filters; closed/dead listings are always excluded.
-- `GET /api/jobs/{id}`: one job including description and keywords; missing IDs return 404.
-- `GET /api/ingestion-runs/latest`: latest persisted report, or `null` before the first run.
-- `POST /api/sync`: starts or returns the active background run. A PostgreSQL lock prevents overlapping syncs across app processes.
-- `GET /api/ingestion-runs/{uuid}`: live progress and outcome. Interrupted runs are marked failed on restart.
-- `GET/POST /api/settings/ai`: configuration status / local-only Google key setup.
+- `GET /api/sources`: supported source names, keys, and repository URLs.
+- `GET /api/jobs`: common jobs, newest exact posting date first; optional `source`, `status`, and `q` filters.
+- `GET /api/jobs/{id}`: one listing with description and keywords.
+- `POST /api/sync`: start a background run of both sources, or return the active run.
+- `GET /api/ingestion-runs/latest`: most recent persisted report.
+- `GET /api/ingestion-runs/{uuid}`: run progress and outcome.
 - `GET /api/health`: database connectivity check.
 - `GET /docs`: generated API documentation.
 
-Database outages return 503 with a generic message. The UI never reads scraper
-output files; snapshots, `.env`, and exports are not served by the API.
-
-The full report also includes `processed`, `stage`, `current_job`, `closed`,
-`dead_links`, cached/skipped description counts, and AI attempts, successes,
-failures, cached results, missing configuration, and deferred quota work. A run
-can successfully persist listings while recording unavailable descriptions or AI
-results separately; the UI shows those counts rather than claiming complete AI
-coverage. No background queue service is required. This is a local development
-app: mutations are loopback-only and same-origin; internet deployment requires
+Closed/dead records are excluded from public job responses. Database failures return
+503. The app serves only UI assets, not snapshots, exports, or `.env`.
+The sync action is local-only and rejects cross-origin requests; deployment needs
 an authenticated operator interface and a durable worker process.
 
-### Validation
+## Validation
 
 ```sh
 # Unit tests; database tests skip without TEST_DATABASE_URL.
 python -m unittest discover -s tests -v
 
-# Full suite against disposable real PostgreSQL (needs local-postgres extra).
+# Full suite against a disposable real PostgreSQL cluster.
 python scripts/test_with_postgres.py
 ```
 
-Alternatively, set `TEST_DATABASE_URL` to an existing test database and run
-unittest. Each database test creates/drops its own random schema, leaving existing
-application tables untouched. Coverage includes concurrent deduplication, unique
-constraints, repeat counts, closure updates, preserved descriptions, API filters
-and details, and failure isolation.
-
-For the optional browser smoke check, run the API with the source listings loaded
-and Solink's description enriched, then use an installed Chromium browser:
-
-```sh
-python -m pip install -e '.[browser]'
-python scripts/check_ui.py --browser-executable /path/to/chromium
-```
-
-The check covers search, status filtering, stored descriptions/requirements,
-refresh, and the mobile details dialog. Screenshots are saved in `data/screenshots`.
-
-### Module boundaries
-
-- `fetch.py`: HTTP transport and source configuration.
-- `source.py`: repository-specific Markdown parsing.
-- `models.py`, `normalize.py`: validated schema and source identity.
-- `enrich.py`, `ai.py`: page descriptions, deterministic keywords, and Gemini transformation.
-- `ingestion.py`, `sync.py`: shared workflow, caching, background execution, and progress.
-- `db.py`, `migrations/`: PostgreSQL storage/schema setup.
-- `cli.py`: optional command-line wrapper for the UI workflow.
-- `api.py`: database API and UI hosting.
-- `dev_db.py`: optional development PostgreSQL launcher.
+The second command requires the `local-postgres` extra. Alternatively set
+`TEST_DATABASE_URL` to a test database; each database test creates/drops its own
+schema. Coverage includes both source formats, common normalization, identity
+stability, multi-source imports, failure isolation, concurrent deduplication,
+status updates, description retention, API filtering, and background sync.

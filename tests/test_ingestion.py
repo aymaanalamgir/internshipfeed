@@ -6,7 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from internshipfeed.enrich import enrich_job, extract_description, extract_keywords
-from internshipfeed.fetch import SOURCE_URL
+from internshipfeed.sources import CANADIAN
+
+SOURCE_URL = CANADIAN.url
 from internshipfeed.normalize import normalize
 from internshipfeed.source import parse_readme
 

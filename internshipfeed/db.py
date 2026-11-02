@@ -37,15 +37,14 @@ def initialize(conn):
 
 FIELDS = ("source", "external_id", "company", "title", "location", "url", "last_known_url",
           "posted_at", "term", "status", "description", "keywords", "enrichment_status",
-          "enrichment_error", "extraction_method", "resolved_url", "enriched_at", "snapshot_id", "source_line", "ai_analysis", "ai_status", "ai_error", "ai_model", "ai_description_hash", "ai_prompt_version", "ai_enriched_at", "link_checked_at")
+          "enrichment_error", "extraction_method", "resolved_url", "enriched_at", "snapshot_id", "source_line", "link_checked_at")
 CONTENT_FIELDS = ("company", "title", "location", "url", "last_known_url", "posted_at", "term", "status",
-                  "description", "keywords", "ai_analysis")
-AI_FIELDS = ("ai_analysis", "ai_model", "ai_description_hash", "ai_prompt_version", "ai_enriched_at")
+                  "description", "keywords")
 ENRICHMENT_FIELDS = ("description", "keywords", "extraction_method", "resolved_url", "enriched_at")
 
 
 def values(payload):
-    return [Jsonb(payload[key]) if key in {"keywords", "ai_analysis"} and payload[key] is not None else payload[key] for key in FIELDS]
+    return [Jsonb(payload[key]) if key == "keywords" and payload[key] is not None else payload[key] for key in FIELDS]
 
 
 def save_job(conn, job):
@@ -71,25 +70,17 @@ def save_job(conn, job):
         if job.enrichment_status in {"not_requested", "not_attempted"}:
             payload["enrichment_status"] = old["enrichment_status"]
             payload["enrichment_error"] = old["enrichment_error"]
-        from .ai import description_hash
-        retained_hash = description_hash(payload["description"]) if payload["description"] else None
-        if job.ai_status != "success" and old["ai_description_hash"] == retained_hash:
-            for key in AI_FIELDS:
-                payload[key] = old[key]
-            if job.ai_status == "not_requested":
-                payload["ai_status"] = old["ai_status"]
-                payload["ai_error"] = old["ai_error"]
-        elif job.ai_status != "success":
-            for key in AI_FIELDS:
-                payload[key] = None
         changed = any(old[key] != payload[key] for key in CONTENT_FIELDS)
         conn.execute("UPDATE jobs SET " + ", ".join(key + " = %s" for key in FIELDS) +
                      ", last_seen_at = clock_timestamp() WHERE id = %s", values(payload) + [old["id"]])
         return "updated" if changed else "skipped_duplicates"
 
 
-def list_jobs(conn, status=None, query=None, include_inactive=False):
+def list_jobs(conn, status=None, query=None, include_inactive=False, source=None):
     clauses, params = ([] if include_inactive else ["status NOT IN ('closed', 'dead')"]), []
+    if source:
+        clauses.append("source = %s")
+        params.append(source)
     if status:
         clauses.append("status = %s")
         params.append(status)

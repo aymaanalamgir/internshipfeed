@@ -4,17 +4,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-SOURCE_URL = "https://github.com/negarprh/Canadian-Tech-Internships-2027"
-README_URL = "https://raw.githubusercontent.com/negarprh/Canadian-Tech-Internships-2027/main/README.md"
-
-
 def fetch_text(url, timeout=20, retries=2):
     if urlparse(url).scheme not in {"http", "https"}:
         raise ValueError("Only HTTP(S) URLs are supported")
     for attempt in range(retries + 1):
         try:
             request = Request(url, headers={
-                "User-Agent": "InternshipFeed/0.1 (+https://github.com/negarprh/Canadian-Tech-Internships-2027)",
+                "User-Agent": "InternshipFeed/0.1",
                 "Accept": "text/html,application/json,text/plain;q=0.9",
             })
             with urlopen(request, timeout=timeout) as response:

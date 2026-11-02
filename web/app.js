@@ -1,5 +1,7 @@
 const search = document.querySelector('#search');
 const status = document.querySelector('#status');
+const sourceFilter = document.querySelector('#source');
+const sourceNames = new Map();
 const rows = document.querySelector('#jobs');
 const summary = document.querySelector('#summary');
 const message = document.querySelector('#message');
@@ -29,8 +31,8 @@ function render() {
   const query = search.value.trim().toLowerCase();
   const visible = jobs.filter(job => {
     const keywords = job.keywords || {};
-    const text = [job.company, job.title, job.location, job.term, job.ai_analysis?.overview, ...Object.values(keywords).flat(), ...(job.ai_analysis?.tech_stack || []).map(item => item.text), ...(job.ai_analysis?.frameworks || []).map(item => item.text)].join(' ').toLowerCase();
-    return (status.value === 'all' || job.status === status.value) && text.includes(query);
+    const text = [job.company, job.title, job.location, job.term, sourceNames.get(job.source), ...Object.values(keywords).flat()].join(' ').toLowerCase();
+    return (status.value === 'all' || job.status === status.value) && (sourceFilter.value === 'all' || job.source === sourceFilter.value) && text.includes(query);
   });
   summary.textContent = `${visible.length.toLocaleString()} of ${jobs.length.toLocaleString()} jobs`;
   rows.replaceChildren();
@@ -44,7 +46,7 @@ function render() {
     const details = element('button', job.title || 'Untitled role', 'role details-link');
     details.type = 'button';
     details.addEventListener('click', () => showDetails(job.id));
-    title.append(element('span', job.company || 'Unknown company', 'company'), details);
+    title.append(element('span', job.company || 'Unknown company', 'company'), details, element('span', sourceNames.get(job.source) || job.source, 'source-label'));
     row.append(title, element('td', job.location || 'Not specified'), element('td', job.term || 'Not specified', job.term ? '' : 'muted'));
     const state = document.createElement('td');
     const jobStatus = ['open', 'closed'].includes(job.status) ? job.status : 'unknown';
@@ -94,9 +96,25 @@ async function load() {
 
 search.addEventListener('input', render);
 status.addEventListener('change', render);
+sourceFilter.addEventListener('change', render);
 reload.addEventListener('click', load);
 load();
+loadSources();
 
+async function loadSources() {
+  try {
+    const response = await fetch('/api/sources');
+    if (!response.ok) return;
+    const sources = await response.json();
+    for (const source of sources) {
+      sourceNames.set(source.url, source.name);
+      const option = element('option', source.name);
+      option.value = source.url;
+      sourceFilter.append(option);
+    }
+    render();
+  } catch (error) { console.error('Unable to load source names:', error); }
+}
 
 const dialog = document.querySelector('#job-details');
 const detailContent = document.querySelector('#detail-content');
@@ -118,29 +136,13 @@ async function showDetails(id) {
       element('h2', job.title),
       element('p', [job.location, job.term, job.status].filter(Boolean).join(' · '), 'muted')
     );
-    if (job.ai_analysis) {
-      const analysis = job.ai_analysis;
-      detailContent.append(element('h3', 'AI overview'), element('p', analysis.overview, 'ai-overview'));
-      for (const [key, label] of [['key_requirements', 'Key requirements'], ['preferred_qualifications', 'Preferred qualifications'], ['tech_stack', 'Tech stack'], ['frameworks', 'Frameworks'], ['responsibilities', 'Responsibilities']]) {
-        if (!analysis[key]?.length) continue;
-        detailContent.append(element('h3', label));
-        const items = document.createElement('ul');
-        for (const item of analysis[key]) {
-          const entry = document.createElement('li');
-          entry.append(element('span', item.text));
-          const evidence = document.createElement('details');
-          evidence.className = 'evidence';
-          evidence.append(element('summary', 'Source evidence'), element('p', item.evidence));
-          entry.append(evidence);
-          items.append(entry);
-        }
-        detailContent.append(items);
-      }
-    } else {
-      detailContent.append(element('p', job.ai_error || 'AI overview has not been generated yet.', 'muted'));
-    }
+    const sourceLink = element('a', sourceNames.get(job.source) || 'Source repository');
+    sourceLink.href = applicationUrl(job.source) || '#';
+    sourceLink.target = '_blank';
+    sourceLink.rel = 'noopener noreferrer';
+    detailContent.append(sourceLink);
     const keywords = job.keywords || {};
-    if (!job.ai_analysis) for (const [key, label] of [['languages', 'Languages'], ['frameworks', 'Frameworks'], ['tools_and_platforms', 'Tools & platforms'], ['concepts', 'Concepts']]) {
+    for (const [key, label] of [['languages', 'Languages'], ['frameworks', 'Frameworks'], ['tools_and_platforms', 'Tools & platforms'], ['concepts', 'Concepts']]) {
       if (keywords[key]?.length) {
         detailContent.append(element('h3', label));
         const chips = document.createElement('div');
@@ -149,7 +151,7 @@ async function showDetails(id) {
         detailContent.append(chips);
       }
     }
-    if (!job.ai_analysis && keywords.requirements?.length) {
+    if (keywords.requirements?.length) {
       detailContent.append(element('h3', 'Key requirements'));
       const requirements = document.createElement('ul');
       for (const requirement of keywords.requirements) requirements.append(element('li', requirement));
@@ -193,11 +195,11 @@ function showSync(run) {
   if (syncing && !total) syncProgress.removeAttribute('value');
   else { syncProgress.max = total || 1; syncProgress.value = processed || (syncing ? 0 : total); }
   syncStatus.textContent = syncing
-    ? (total ? `Reading descriptions: ${processed} of ${total} listings. ${run.current_job || ''}` : 'Fetching the latest listings…')
+    ? (run.stage === 'fetching' || !total ? `Fetching ${run.current_source || 'the latest listings'}…` : `Processing ${run.current_source || 'sources'}: ${processed} of ${total} listings. ${run.current_job || ''}`)
     : run.status === 'success' ? 'Sync complete.' : 'Sync ended with errors. Successfully saved jobs are available; try syncing again.';
-  syncCounts.textContent = `${run.inserted || 0} new · ${run.updated || 0} updated · ${run.skipped_duplicates || 0} duplicates · ${run.failed || 0} failed · ${run.enrichment_successes || 0} descriptions read · ${run.ai_successes || 0} AI overviews · ${run.ai_cached || 0} AI results reused · ${run.closed || 0} closed skipped · ${run.dead_links || 0} dead links hidden`;
-  if (run.ai_not_configured) syncCounts.textContent += ' · Add a Google API key in AI settings to enable overviews.';
-  if (run.ai_failed || run.ai_deferred) syncCounts.textContent += ` · ${(run.ai_failed || 0) + (run.ai_deferred || 0)} AI analyses unavailable; retry later.`;
+  syncCounts.textContent = `${run.inserted || 0} new · ${run.updated || 0} updated · ${run.skipped_duplicates || 0} duplicates · ${run.failed || 0} failed · ${run.enrichment_successes || 0} descriptions read · ${run.closed || 0} closed skipped · ${run.dead_links || 0} dead links hidden`;
+  const sources = (run.sources || []).map(source => `${source.name}: ${source.scraped || 0} scraped, ${source.failed || 0} failed (${source.status})`);
+  if (sources.length) syncCounts.textContent += ' · ' + sources.join(' · ');
 }
 
 async function pollSync() {
@@ -231,33 +233,3 @@ syncButton.addEventListener('click', async () => {
   }
 });
 pollSync();
-
-const settingsDialog = document.querySelector('#ai-settings');
-const settingsMessage = document.querySelector('#ai-settings-message');
-const keyInput = document.querySelector('#ai-key');
-document.querySelector('#ai-settings-button').addEventListener('click', async () => {
-  settingsMessage.textContent = '';
-  settingsDialog.showModal();
-  try {
-    const response = await fetch('/api/settings/ai');
-    if (!response.ok) throw new Error();
-    const config = await response.json();
-    document.querySelector('#ai-configuration-status').textContent = config.configured ? 'A Google key is saved. You can replace it below.' : 'No Google key has been saved yet.';
-  } catch { settingsMessage.textContent = 'Could not read AI settings.'; }
-});
-document.querySelector('#close-ai-settings').addEventListener('click', () => settingsDialog.close());
-settingsDialog.addEventListener('close', () => { keyInput.value = ''; });
-document.querySelector('#ai-settings-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const save = document.querySelector('#save-ai-settings');
-  save.disabled = true;
-  try {
-    const response = await fetch('/api/settings/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: keyInput.value.trim(), free_tier_confirmed: document.querySelector('#free-tier').checked }) });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || 'Unable to save key.');
-    keyInput.value = '';
-    document.querySelector('#ai-configuration-status').textContent = 'Google key saved.';
-    settingsMessage.textContent = 'Saved. Close settings and click Sync & enrich to generate AI overviews.';
-  } catch (error) { settingsMessage.textContent = error.message; }
-  finally { save.disabled = false; }
-});

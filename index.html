@@ -12,12 +12,16 @@
     <header>
       <p class="eyebrow">YOUR NEXT CHAPTER</p>
       <h1>InternshipFeed<span>.</span></h1>
-      <p class="intro">Find your next tech internship in Canada.</p>
+      <p class="intro">Tech internships from Canadian Tech Internships and Simplify, in one feed.</p>
     </header>
     <section aria-label="Job filters" class="filters">
       <div class="search">
         <label for="search">Search jobs</label>
         <input id="search" type="search" placeholder="Company, role, location or technology…">
+      </div>
+      <div>
+        <label for="source">Job source</label>
+        <select id="source"><option value="all">All sources</option></select>
       </div>
       <div>
         <label for="status">Application status</label>
@@ -31,7 +35,6 @@
     <div class="results-heading">
       <p id="summary" role="status" aria-live="polite">Loading jobs…</p>
       <div class="actions">
-        <button id="ai-settings-button" type="button">AI settings</button>
         <button id="reload" type="button">Refresh</button>
         <button id="sync-jobs" class="primary" type="button">Sync &amp; enrich</button>
       </div>
@@ -49,25 +52,11 @@
         <tbody id="jobs"></tbody>
       </table>
     </div>
-    <footer>Listings from <a href="https://github.com/negarprh/Canadian-Tech-Internships-2027" target="_blank" rel="noopener noreferrer">Canadian Tech Internships</a>. Application status reflects the source repository.</footer>
+    <footer>Listings from <a href="https://github.com/negarprh/Canadian-Tech-Internships-2027" target="_blank" rel="noopener noreferrer">Canadian Tech Internships</a> and <a href="https://github.com/SimplifyJobs/Summer2027-Internships" target="_blank" rel="noopener noreferrer">Simplify Internships</a>. Application status reflects each source repository.</footer>
   </main>
   <dialog id="job-details" aria-label="Job details">
     <div class="dialog-toolbar"><button id="close-details" type="button" autofocus>Close</button></div>
     <div id="detail-content" aria-live="polite"></div>
-  </dialog>
-  <dialog id="ai-settings" aria-labelledby="ai-settings-title">
-    <form id="ai-settings-form">
-      <h2 id="ai-settings-title">Google AI overview</h2>
-      <p>Generate requirements, tech stack, frameworks, responsibilities, and a short overview from each job description.</p>
-      <p><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">Get a Google AI Studio API key ↗</a>. Use a Free-tier project with billing disabled. Free usage has limits; the app pauses AI requests when Google reports a quota limit.</p>
-      <p>Only public job descriptions are sent to Google. Google may use Free-tier input and output to improve its products.</p>
-      <p id="ai-configuration-status" role="status"></p>
-      <label for="ai-key">Google API key</label>
-      <input id="ai-key" type="password" autocomplete="off" required minlength="20" maxlength="500" placeholder="Enter your key once">
-      <label class="checkbox"><input id="free-tier" type="checkbox" required> My Google project is on the Free tier with billing disabled.</label>
-      <p id="ai-settings-message" role="status"></p>
-      <div class="actions"><button id="close-ai-settings" type="button">Close</button><button id="save-ai-settings" type="submit" class="primary">Save key</button></div>
-    </form>
   </dialog>
 </body>
 </html>

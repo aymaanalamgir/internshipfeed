@@ -18,7 +18,9 @@ from psycopg.conninfo import make_conninfo
 from internshipfeed import db
 from internshipfeed.api import app, connection
 from internshipfeed.cli import main
-from internshipfeed.fetch import SOURCE_URL
+from internshipfeed.sources import CANADIAN
+
+SOURCE_URL = CANADIAN.url
 from internshipfeed.models import JobKeywords
 from internshipfeed.normalize import normalize
 from internshipfeed.source import parse_readme
@@ -121,10 +123,10 @@ class DatabaseTests(unittest.TestCase):
             source = Path(directory) / "README.md"
             source.write_text(FIXTURE.read_text() + FIXTURE.read_text().splitlines()[3] + "\n")
             with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)):
-                self.assertEqual(main(["--input", str(source), "--output", str(output), "--no-enrich", "--no-ai"]), 0)
+                self.assertEqual(main(["--input", str(source), "--output", str(output), "--no-enrich"]), 0)
                 first = json.loads((output / "run.json").read_text())
                 self.assertEqual((first["scraped"], first["inserted"], first["skipped_duplicates"], first["failed"]), (4, 3, 1, 0))
-                self.assertEqual(main(["--input", str(source), "--output", str(output), "--no-enrich", "--no-ai"]), 0)
+                self.assertEqual(main(["--input", str(source), "--output", str(output), "--no-enrich"]), 0)
                 second = json.loads((output / "run.json").read_text())
                 self.assertEqual((second["inserted"], second["skipped_duplicates"], second["failed"]), (0, 4, 0))
             self.assertEqual(len(db.list_jobs(self.conn, include_inactive=True)), 3)
@@ -135,8 +137,8 @@ class DatabaseTests(unittest.TestCase):
         original_connect = db.connect
         bad = dict(self.records[0], company=" ")
         with tempfile.TemporaryDirectory() as directory:
-            with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)), patch("internshipfeed.ingestion.parse_readme", return_value=[bad, self.records[1]]):
-                result = main(["--input", str(FIXTURE), "--output", directory, "--no-enrich", "--no-ai"])
+            with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)), patch("internshipfeed.sources.parse_readme", return_value=[bad, self.records[1]]):
+                result = main(["--input", str(FIXTURE), "--output", directory, "--no-enrich"])
             report = json.loads((Path(directory) / "run.json").read_text())
             self.assertEqual(result, 1)
             self.assertEqual(report["status"], "partial_failure")
@@ -167,27 +169,6 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(db.list_jobs(self.conn)), 1)
         self.assertEqual(db.list_jobs(self.conn, status="closed"), [])
 
-    def test_ai_cached_preserved_and_invalidated_on_description_change(self):
-        from internshipfeed.ai import DescriptionAnalysis, DEFAULT_MODEL, description_hash
-        self.job.description = "Build tools with Python."
-        self.job.enrichment_status = "success"
-        self.job.ai_status = "success"
-        self.job.ai_analysis = DescriptionAnalysis(overview="Build tools.", key_requirements=[], preferred_qualifications=[], tech_stack=[], frameworks=[], responsibilities=[])
-        self.job.ai_description_hash = description_hash(self.job.description)
-        self.job.ai_model = DEFAULT_MODEL
-        db.save_job(self.conn, self.job)
-        fresh = normalize(self.records[0], SOURCE_URL, "next")
-        fresh.ai_status = "failed"
-        fresh.ai_error = "Quota reached"
-        db.save_job(self.conn, fresh)
-        stored = db.get_source_job(self.conn, self.job.source, self.job.external_id)
-        self.assertIsNotNone(stored.ai_analysis)
-        fresh.description = "Build tools with Java."
-        fresh.enrichment_status = "success"
-        db.save_job(self.conn, fresh)
-        stored = db.get_source_job(self.conn, self.job.source, self.job.external_id)
-        self.assertIsNone(stored.ai_analysis)
-
     def test_ui_sync_runs_background_and_blocks_duplicate_runs(self):
         from internshipfeed.ingestion import run_ingestion, SYNC_LOCK
         def test_connection():
@@ -196,7 +177,7 @@ class DatabaseTests(unittest.TestCase):
         app.dependency_overrides[connection] = test_connection
         with tempfile.TemporaryDirectory() as directory:
             def small_workflow(**kwargs):
-                return run_ingestion(input_path=FIXTURE, output=directory, enrich=False, use_ai=False, **kwargs)
+                return run_ingestion(input_path=FIXTURE, output=directory, enrich=False, **kwargs)
             with patch("internshipfeed.api.db.connect", side_effect=self.connect), patch("internshipfeed.sync.run_ingestion", side_effect=small_workflow), TestClient(app) as client:
                 response = client.post("/api/sync")
                 self.assertEqual(response.status_code, 202)
@@ -213,17 +194,39 @@ class DatabaseTests(unittest.TestCase):
                     self.assertEqual(client.post("/api/sync").json()["id"], run_id)
                 self.assertEqual(client.post("/api/sync", headers={"Origin": "https://evil.example"}).status_code, 403)
 
-    def test_ai_settings_never_returns_key(self):
+
+    def test_two_sources_share_database_and_repeat_without_duplicates(self):
+        from internshipfeed.ingestion import run_ingestion
+        from internshipfeed.sources import CANADIAN, SIMPLIFY
+        original_connect = db.connect
+        inputs = {'canadian-tech': FIXTURE, 'simplify': FIXTURE.parent / 'simplify.md'}
+        with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.ingestion.db.connect', side_effect=lambda: original_connect(self.dsn)):
+            first = run_ingestion(input_paths=inputs, output=directory, enrich=False)
+            self.assertEqual(first['status'], 'success')
+            self.assertEqual((first['scraped'], first['inserted']), (6, 6))
+            self.assertEqual(len(first['sources']), 2)
+            second = run_ingestion(input_paths=inputs, output=directory, enrich=False)
+            self.assertEqual((second['inserted'], second['skipped_duplicates']), (0, 6))
+        stored = db.list_jobs(self.conn, include_inactive=True)
+        self.assertEqual({job.source for job in stored}, {CANADIAN.url, SIMPLIFY.url})
+        self.assertEqual(len(stored), 6)
+        self.assertEqual(len(db.list_jobs(self.conn, source=SIMPLIFY.url)), 2)
+
+    def test_source_failure_does_not_prevent_other_source_import(self):
+        from internshipfeed.ingestion import run_ingestion
+        original_connect = db.connect
         with tempfile.TemporaryDirectory() as directory:
-            def test_connection():
-                with self.connect() as conn:
-                    yield conn
-            app.dependency_overrides[connection] = test_connection
-            with patch("internshipfeed.api.db.connect", side_effect=self.connect), patch("internshipfeed.api.db.ROOT", Path(directory)), patch.dict(os.environ, {}, clear=False), TestClient(app) as client:
-                key = "test-key-12345678901234567890"
-                response = client.post("/api/settings/ai", json={"api_key": key, "free_tier_confirmed": True})
-                self.assertEqual(response.status_code, 200)
-                self.assertTrue(response.json()["configured"])
-                self.assertNotIn(key, response.text)
-                self.assertNotIn(key, client.get("/api/settings/ai").text)
-                self.assertIn(key, (Path(directory) / ".env").read_text())
+            broken = Path(directory) / 'broken.md'
+            broken.write_text('Upstream table format changed')
+            with patch('internshipfeed.ingestion.db.connect', side_effect=lambda: original_connect(self.dsn)):
+                run = run_ingestion(input_paths={'canadian-tech': broken, 'simplify': FIXTURE.parent / 'simplify.md'}, output=directory, enrich=False)
+        self.assertEqual(run['status'], 'partial_failure')
+        self.assertEqual(run['source_failures'], 1)
+        self.assertEqual(run['inserted'], 3)
+        self.assertEqual(run['sources'][0]['status'], 'failed')
+        self.assertEqual(run['sources'][1]['status'], 'success')
+
+    def test_removed_configuration_endpoints_are_absent(self):
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual(client.get('/api/settings/ai').status_code, 404)
+            self.assertEqual(len(client.get('/api/sources').json()), 2)

@@ -5,8 +5,6 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .ai import DescriptionAnalysis
-
 
 class JobKeywords(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -38,13 +36,6 @@ class JobListing(BaseModel):
     extraction_method: Optional[str] = None
     resolved_url: Optional[str] = None
     enriched_at: Optional[datetime] = None
-    ai_analysis: Optional[DescriptionAnalysis] = None
-    ai_status: Literal["not_requested", "not_configured", "success", "failed", "skipped"] = "not_requested"
-    ai_error: Optional[str] = None
-    ai_model: Optional[str] = None
-    ai_description_hash: Optional[str] = None
-    ai_prompt_version: Optional[str] = None
-    ai_enriched_at: Optional[datetime] = None
     snapshot_id: str
     source_line: int = Field(ge=1)
     first_seen_at: Optional[datetime] = None
