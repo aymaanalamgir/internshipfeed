@@ -18,6 +18,7 @@ class JobKeywords(BaseModel):
 class JobListing(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
     id: Optional[int] = None
+    canonical_job_id: Optional[int] = None
     company: str = Field(min_length=1)
     title: str = Field(min_length=1)
     location: str = Field(min_length=1)
@@ -57,3 +58,49 @@ class JobListing(BaseModel):
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 raise ValueError("Expected an absolute HTTP(S) URL")
         return value
+
+
+class SourceJobReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    source: str
+    external_id: str
+    company: str
+    title: str
+    location: str
+    url: Optional[str]
+    last_known_url: Optional[str]
+    posted_at: Optional[date]
+    term: Optional[str]
+    status: Literal["open", "closed", "unknown", "dead"]
+    snapshot_id: str
+    source_line: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+
+
+class CanonicalJob(BaseModel):
+    """The canonical opportunity contract; source/enrichment data lives separately."""
+    model_config = ConfigDict(extra="forbid")
+    id: int = Field(gt=0)
+    company: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    location: str = Field(min_length=1)
+    application_url: Optional[str]
+    posted_at: Optional[date]
+    status: Literal["open", "closed", "unknown", "dead"]
+
+    @field_validator("application_url")
+    @classmethod
+    def http_url(cls, value):
+        return JobListing.http_url(value)
+
+
+class JobDetails(BaseModel):
+    """Associated source and enrichment context, outside the CanonicalJob entity."""
+    model_config = ConfigDict(extra="forbid")
+    job: CanonicalJob
+    term: Optional[str]
+    description: Optional[str]
+    keywords: JobKeywords
+    sources: List[SourceJobReference]

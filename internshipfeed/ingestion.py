@@ -193,6 +193,7 @@ def run_ingestion(input_path=None, output=None, enrich=True, enrichment_limit=No
                 run["failed"] += remaining
                 logger.error("Source %s failed (%s); continuing other sources", source.key, type(exc).__name__)
             db.record_run(conn, run)
+        run["reconciliation"] = db.reconciliation_stats(conn)
         run["source_failures"] = source_failures
         run["status"] = "failed" if source_failures == len(selected) else "partial_failure" if source_failures or run["failed"] else "success"
     except Exception as exc:

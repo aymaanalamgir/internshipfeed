@@ -57,3 +57,5 @@ progress { width: 100%; accent-color: #237047; }
 @media (max-width: 640px) { .results-heading { align-items: flex-start; gap: 12px; flex-direction: column; } }
 
 .source-label { display: block; margin-top: 7px; color: #65736c; font-size: 11px; }
+
+.source-identity { overflow-wrap: anywhere; color: #65736c; font-size: 11px; }

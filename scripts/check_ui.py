@@ -16,14 +16,17 @@ with sync_playwright() as playwright:
     page.goto(args.url)
     page.wait_for_function("document.querySelector('#summary').textContent.includes(' of ')")
     page.wait_for_function("document.querySelector('#source').options.length === 3")
-    saved = page.request.get(args.url + '/api/jobs').json()
+    entries = page.request.get(args.url + '/api/feed').json()
+    saved = [entry['job'] for entry in entries]
+    canonical = page.request.get(args.url + '/api/jobs').json()
+    assert all(set(job) == {'id', 'company', 'title', 'location', 'application_url', 'posted_at', 'status'} for job in canonical)
     sources = page.request.get(args.url + '/api/sources').json()
     all_count = len(saved)
     assert page.locator('#jobs tr').count() == all_count > 0
     assert not any(job['status'] in {'closed', 'dead'} for job in saved)
     for source in sources:
         page.select_option('#source', source['url'])
-        expected = sum(job['source'] == source['url'] for job in saved)
+        expected = sum(any(record['source'] == source['url'] and record['status'] not in {'closed', 'dead'} for record in entry['sources']) for entry in entries)
         assert page.locator('#jobs tr').count() == expected
     page.select_option('#source', 'all')
     page.select_option('#status', 'open')
@@ -33,7 +36,7 @@ with sync_playwright() as playwright:
     page.fill('#search', sample['title'])
     page.get_by_role('button', name=sample['title'], exact=True).first.click()
     page.get_by_role('heading', name='Job description', exact=True).wait_for()
-    assert page.locator('#detail-content a').first.get_attribute('href') == sample['source']
+    assert page.locator('#detail-content a').first.get_attribute('href') == entries[0]['sources'][0]['source']
     page.keyboard.press('Escape')
     page.fill('#search', 'no-such-company-1234567')
     assert page.locator('#message').is_visible()

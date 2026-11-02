@@ -57,9 +57,9 @@ class DatabaseTests(unittest.TestCase):
             outcomes = list(pool.map(save, range(4)))
         self.assertEqual(outcomes.count("inserted"), 1)
         self.assertEqual(outcomes.count("skipped_duplicates"), 3)
-        self.assertEqual(len(db.list_jobs(self.conn, include_inactive=True)), 1)
+        self.assertEqual(len(db.list_source_jobs(self.conn, include_inactive=True)), 1)
         with self.assertRaises(psycopg.errors.UniqueViolation):
-            self.conn.execute("INSERT INTO jobs (source, external_id, company, title, location, status, snapshot_id, source_line) VALUES (%s, %s, 'x', 'y', 'z', 'open', 'a', 1)", (self.job.source, self.job.external_id))
+            self.conn.execute("INSERT INTO source_jobs (source, external_id, company, title, location, status, snapshot_id, source_line, canonical_job_id) VALUES (%s, %s, 'x', 'y', 'z', 'open', 'a', 1, %s)", (self.job.source, self.job.external_id, db.get_source_job(self.conn, self.job.source, self.job.external_id).canonical_job_id))
 
     def test_closed_update_preserves_description_url_and_first_seen(self):
         self.job.description = "Experience with Python and React."
@@ -67,10 +67,10 @@ class DatabaseTests(unittest.TestCase):
         self.job.enrichment_status = "success"
         self.job.enriched_at = datetime.now(timezone.utc)
         self.assertEqual(db.save_job(self.conn, self.job), "inserted")
-        before = db.list_jobs(self.conn, include_inactive=True)[0]
+        before = db.list_source_jobs(self.conn, include_inactive=True)[0]
         closed = normalize(dict(self.records[0], status="closed", raw_url=None), SOURCE_URL, "b")
         self.assertEqual(db.save_job(self.conn, closed), "updated")
-        after = db.list_jobs(self.conn, include_inactive=True)[0]
+        after = db.list_source_jobs(self.conn, include_inactive=True)[0]
         self.assertEqual(after.id, before.id)
         self.assertEqual(after.first_seen_at, before.first_seen_at)
         self.assertGreaterEqual(after.last_seen_at, before.last_seen_at)
@@ -84,7 +84,7 @@ class DatabaseTests(unittest.TestCase):
         closed.enrichment_status = "failed"
         closed.enrichment_error = "timeout"
         db.save_job(self.conn, closed)
-        after = db.list_jobs(self.conn, include_inactive=True)[0]
+        after = db.list_source_jobs(self.conn, include_inactive=True)[0]
         self.assertEqual(after.description, before.description)
         self.assertEqual(after.enrichment_status, "failed")
 
@@ -103,8 +103,15 @@ class DatabaseTests(unittest.TestCase):
             data = response.json()
             self.assertEqual(len(data), 1)
             detail = client.get("/api/jobs/%s" % data[0]["id"]).json()
-            self.assertEqual(detail["description"], self.job.description)
-            self.assertEqual(detail["keywords"]["frameworks"], ["React"])
+            expected_fields = {"id", "company", "title", "location", "application_url", "posted_at", "status"}
+            self.assertEqual(set(data[0]), expected_fields)
+            self.assertEqual(set(detail), expected_fields)
+            self.assertEqual(detail["application_url"], self.job.url)
+            context = client.get("/api/jobs/%s/details" % detail["id"]).json()
+            self.assertEqual(set(context["job"]), expected_fields)
+            self.assertEqual(context["description"], self.job.description)
+            self.assertEqual(context["keywords"]["frameworks"], ["React"])
+            self.assertEqual(client.get("/api/feed").json()[0]["job"], detail)
             self.assertEqual(client.get("/api/jobs?status=closed").json(), [])
             self.assertEqual(len(client.get("/api/jobs?q=react").json()), 1)
             self.assertEqual(client.get("/api/jobs?q=%25").json(), [])
@@ -129,7 +136,7 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(main(["--input", str(source), "--output", str(output), "--no-enrich"]), 0)
                 second = json.loads((output / "run.json").read_text())
                 self.assertEqual((second["inserted"], second["skipped_duplicates"], second["failed"]), (0, 4, 0))
-            self.assertEqual(len(db.list_jobs(self.conn, include_inactive=True)), 3)
+            self.assertEqual(len(db.list_source_jobs(self.conn, include_inactive=True)), 3)
             self.assertEqual(db.latest_run(self.conn)["id"], second["id"])
             self.assertEqual(self.conn.execute("SELECT count(*) AS n FROM ingestion_runs").fetchone()["n"], 2)
 
@@ -143,7 +150,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertEqual(report["status"], "partial_failure")
             self.assertEqual((report["scraped"], report["inserted"], report["failed"]), (2, 1, 1))
-            self.assertEqual(len(db.list_jobs(self.conn, include_inactive=True)), 1)
+            self.assertEqual(len(db.list_source_jobs(self.conn, include_inactive=True)), 1)
 
     def test_enrichment_persisted_by_scraper(self):
         original_connect = db.connect
@@ -151,7 +158,7 @@ class DatabaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with patch("internshipfeed.cli.db.connect", side_effect=lambda: original_connect(self.dsn)), patch("internshipfeed.ingestion.enrich_job", return_value=enrichment):
                 self.assertEqual(main(["--input", str(FIXTURE), "--output", directory, "--enrich"]), 0)
-            job = next(j for j in db.list_jobs(self.conn, include_inactive=True) if j.status == "open")
+            job = next(j for j in db.list_source_jobs(self.conn, include_inactive=True) if j.status == "open")
             self.assertEqual(job.description, enrichment["description"])
             self.assertEqual(job.keywords.languages, ["Python"])
             self.assertIsNotNone(job.enriched_at)
@@ -162,8 +169,8 @@ class DatabaseTests(unittest.TestCase):
             db.save_job(self.conn, normalize(record, SOURCE_URL, "snapshot"))
         active = db.list_jobs(self.conn)
         self.assertEqual(len(active), 2)
-        closed = next(job for job in db.list_jobs(self.conn, include_inactive=True) if job.status == "closed")
-        self.assertIsNone(db.get_job(self.conn, closed.id))
+        closed = next(job for job in db.list_source_jobs(self.conn, include_inactive=True) if job.status == "closed")
+        self.assertIsNone(db.get_job(self.conn, closed.canonical_job_id))
         self.job.status = "dead"
         db.save_job(self.conn, self.job)
         self.assertEqual(len(db.list_jobs(self.conn)), 1)
@@ -207,7 +214,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(len(first['sources']), 2)
             second = run_ingestion(input_paths=inputs, output=directory, enrich=False)
             self.assertEqual((second['inserted'], second['skipped_duplicates']), (0, 6))
-        stored = db.list_jobs(self.conn, include_inactive=True)
+        stored = db.list_source_jobs(self.conn, include_inactive=True)
         self.assertEqual({job.source for job in stored}, {CANADIAN.url, SIMPLIFY.url})
         self.assertEqual(len(stored), 6)
         self.assertEqual(len(db.list_jobs(self.conn, source=SIMPLIFY.url)), 2)
@@ -230,3 +237,178 @@ class DatabaseTests(unittest.TestCase):
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             self.assertEqual(client.get('/api/settings/ai').status_code, 404)
             self.assertEqual(len(client.get('/api/sources').json()), 2)
+
+    def test_url_match_links_two_source_identities_to_one_canonical_job(self):
+        from internshipfeed.sources import SIMPLIFY
+        first = self.job.model_copy(update={'url': 'https://jobs.example.com/job/123?utm_source=canadian'})
+        second = self.job.model_copy(update={'source': SIMPLIFY.url, 'external_id': 'simplify:875',
+                                           'title': 'SWE Co-op', 'url': 'http://JOBS.example.com/job/123/?ref=Simplify'})
+        db.save_job(self.conn, first)
+        db.save_job(self.conn, second)
+        a = db.get_source_job(self.conn, first.source, first.external_id)
+        b = db.get_source_job(self.conn, second.source, second.external_id)
+        self.assertNotEqual(a.id, b.id)
+        self.assertNotEqual(a.external_id, b.external_id)
+        self.assertEqual(a.canonical_job_id, b.canonical_job_id)
+        listings = db.list_jobs(self.conn)
+        self.assertEqual(len(listings), 1)
+        self.assertEqual(listings[0].id, a.canonical_job_id)
+        self.assertEqual({record.id for record in db.get_job_details(self.conn, listings[0].id).sources}, {a.id, b.id})
+        self.assertEqual(db.reconciliation_stats(self.conn)['duplicate_listings_removed'], 1)
+        self.assertEqual(len(db.list_jobs(self.conn, source=SIMPLIFY.url)), 1)
+        self.assertEqual(len(db.list_jobs(self.conn, query='SWE Co-op')), 1)
+        self.assertEqual(db.save_job(self.conn, second), 'skipped_duplicates')
+        self.assertEqual(db.get_source_job(self.conn, second.source, second.external_id).canonical_job_id, a.canonical_job_id)
+
+    def test_same_title_different_or_missing_urls_not_merged(self):
+        first = self.job.model_copy(update={'url': 'https://stripe.com/jobs/search?gh_jid=123'})
+        second = first.model_copy(update={'source': 'source-b', 'external_id': '875', 'url': 'https://stripe.com/jobs/search?gh_jid=456'})
+        third = first.model_copy(update={'source': 'source-c', 'external_id': '125', 'url': None})
+        fourth = third.model_copy(update={'source': 'source-d'})
+        for job in (first, second, third, fourth):
+            db.save_job(self.conn, job)
+        self.assertEqual(len(db.list_jobs(self.conn)), 4)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM source_jobs').fetchone()['n'], 4)
+
+    def test_closure_retains_canonical_mapping_and_active_peer(self):
+        first = self.job.model_copy()
+        second = first.model_copy(update={'source': 'source-b', 'external_id': '875'})
+        for job in (first, second):
+            db.save_job(self.conn, job)
+        initial = db.get_source_job(self.conn, first.source, first.external_id)
+        closed = first.model_copy(update={'status': 'closed', 'url': None})
+        db.save_job(self.conn, closed)
+        after = db.get_source_job(self.conn, first.source, first.external_id)
+        self.assertEqual(after.id, initial.id)
+        self.assertEqual(after.canonical_job_id, initial.canonical_job_id)
+        listing = db.get_job(self.conn, initial.canonical_job_id)
+        self.assertEqual(listing.status, 'open')
+        self.assertEqual(len(db.get_job_details(self.conn, listing.id).sources), 2)
+        self.assertEqual(db.list_jobs(self.conn, source=first.source), [])
+        db.save_job(self.conn, second.model_copy(update={'status': 'closed', 'url': None}))
+        self.assertEqual(db.list_jobs(self.conn), [])
+        self.assertIsNone(db.get_job(self.conn, initial.canonical_job_id))
+
+    def test_url_correction_detaches_only_the_corrected_source(self):
+        first = self.job.model_copy()
+        second = first.model_copy(update={'source': 'source-b', 'external_id': '875'})
+        db.save_job(self.conn, first)
+        db.save_job(self.conn, second)
+        before = db.get_source_job(self.conn, second.source, second.external_id)
+        changed = second.model_copy(update={'url': 'https://example.com/jobs/different'})
+        db.save_job(self.conn, changed)
+        after = db.get_source_job(self.conn, second.source, second.external_id)
+        self.assertEqual(after.id, before.id)
+        self.assertEqual(after.first_seen_at, before.first_seen_at)
+        self.assertNotEqual(after.canonical_job_id, before.canonical_job_id)
+        self.assertEqual(db.get_source_job(self.conn, first.source, first.external_id).canonical_job_id, before.canonical_job_id)
+        self.assertEqual(len(db.list_jobs(self.conn)), 2)
+
+    def test_verified_redirect_bridges_existing_groups_and_old_ids_resolve(self):
+        direct = self.job.model_copy(update={'url': 'https://employer.example/jobs/123'})
+        wrapper = direct.model_copy(update={'source': 'source-b', 'external_id': '875', 'url': 'https://simplify.jobs/p/abc'})
+        db.save_job(self.conn, direct)
+        db.save_job(self.conn, wrapper)
+        old_id = db.get_source_job(self.conn, wrapper.source, wrapper.external_id).canonical_job_id
+        wrapper.enrichment_status = 'success'
+        wrapper.description = 'Build software with Python.'
+        wrapper.resolved_url = direct.url
+        db.save_job(self.conn, wrapper)
+        self.assertEqual(len(db.list_jobs(self.conn)), 1)
+        current = db.list_jobs(self.conn)[0]
+        self.assertEqual(db.get_job(self.conn, old_id).id, current.id)
+        self.assertEqual(db.get_job_details(self.conn, current.id).description, wrapper.description)
+        self.assertEqual(len(db.get_job_details(self.conn, current.id).sources), 2)
+
+    def test_concurrent_cross_source_inserts_create_one_canonical(self):
+        def save(index):
+            job = self.job.model_copy(update={'source': 'source-%s' % index, 'external_id': str(index),
+                                              'url': 'https://example.com/job/123?utm_source=%s' % index})
+            with self.connect() as conn:
+                return db.save_job(conn, job)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            self.assertEqual(list(pool.map(save, range(4))), ['inserted'] * 4)
+        self.assertEqual(len(db.list_source_jobs(self.conn)), 4)
+        self.assertEqual(len(db.list_jobs(self.conn)), 1)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM canonical_jobs').fetchone()['n'], 1)
+
+
+    def test_generic_career_url_does_not_merge_unrelated_source_records(self):
+        first = self.job.model_copy(update={'url': 'https://example.com/careers'})
+        second = first.model_copy(update={'source': 'source-b', 'external_id': '875'})
+        db.save_job(self.conn, first)
+        db.save_job(self.conn, second)
+        self.assertEqual(len(db.list_jobs(self.conn)), 2)
+
+
+    def test_legacy_database_backfill_preserves_ids_and_is_idempotent(self):
+        legacy_schema = 'legacy_' + uuid.uuid4().hex
+        with psycopg.connect(os.environ['TEST_DATABASE_URL'], autocommit=True) as admin:
+            admin.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(legacy_schema)))
+        legacy_dsn = make_conninfo(os.environ['TEST_DATABASE_URL'], options='-csearch_path=' + legacy_schema)
+        try:
+            with db.connect(legacy_dsn) as legacy:
+                legacy.execute((Path(db.__file__).parent / 'migrations' / '001_jobs.sql').read_text())
+                for source, url in (('source-a', 'https://example.com/job/123'), ('source-b', 'http://EXAMPLE.com/job/123/?utm_source=github')):
+                    legacy.execute("INSERT INTO jobs (source, external_id, company, title, location, url, status, snapshot_id, source_line) VALUES (%s, '875', 'Acme', 'Intern', 'Toronto', %s, 'open', 'legacy', 1)", (source, url))
+                before = legacy.execute('SELECT id, first_seen_at FROM jobs ORDER BY id').fetchall()
+                db.initialize(legacy)
+                rows = legacy.execute('SELECT id, first_seen_at, canonical_job_id FROM source_jobs ORDER BY id').fetchall()
+                self.assertEqual([{key: row[key] for key in ('id', 'first_seen_at')} for row in rows], before)
+                self.assertEqual(rows[0]['canonical_job_id'], rows[1]['canonical_job_id'])
+                self.assertEqual(len(db.list_jobs(legacy)), 1)
+                db.initialize(legacy)
+                self.assertIsNone(legacy.execute("SELECT to_regclass('jobs') AS table_name").fetchone()['table_name'])
+                self.assertEqual(legacy.execute('SELECT id, first_seen_at, canonical_job_id FROM source_jobs ORDER BY id').fetchall(), rows)
+        finally:
+            with psycopg.connect(os.environ['TEST_DATABASE_URL'], autocommit=True) as admin:
+                admin.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(legacy_schema)))
+
+
+    def test_failed_fetch_on_changed_url_does_not_reuse_old_redirect_or_description(self):
+        old = self.job.model_copy(update={'enrichment_status': 'success', 'description': 'Python required.', 'resolved_url': self.job.url})
+        peer = self.job.model_copy(update={'source': 'source-b', 'external_id': '875'})
+        db.save_job(self.conn, old)
+        db.save_job(self.conn, peer)
+        previous = db.get_source_job(self.conn, old.source, old.external_id)
+        changed = old.model_copy(update={'url': 'https://example.com/jobs/different', 'enrichment_status': 'failed'})
+        db.save_job(self.conn, changed)
+        stored = db.get_source_job(self.conn, changed.source, changed.external_id)
+        self.assertNotEqual(stored.canonical_job_id, previous.canonical_job_id)
+        self.assertIsNone(stored.description)
+        self.assertIsNone(stored.resolved_url)
+        self.assertEqual(len(db.list_jobs(self.conn)), 2)
+
+
+    def test_sql_only_upgrade_is_completed_without_recreating_legacy_table(self):
+        legacy_schema = 'upgrade_' + uuid.uuid4().hex
+        with psycopg.connect(os.environ['TEST_DATABASE_URL'], autocommit=True) as admin:
+            admin.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(legacy_schema)))
+        dsn = make_conninfo(os.environ['TEST_DATABASE_URL'], options='-csearch_path=' + legacy_schema)
+        try:
+            with db.connect(dsn) as legacy:
+                migrations = Path(db.__file__).parent / 'migrations'
+                legacy.execute((migrations / '001_jobs.sql').read_text())
+                legacy.execute("INSERT INTO jobs (source, external_id, company, title, location, url, status, snapshot_id, source_line) VALUES ('source-a', '875', 'Acme', 'Intern', 'Toronto', 'https://example.com/job/1', 'open', 'legacy', 1)")
+                legacy.execute('CREATE TABLE schema_migrations (version TEXT PRIMARY KEY)')
+                for path in sorted(migrations.glob('*.sql')):
+                    if path.name != '001_jobs.sql':
+                        legacy.execute(path.read_text())
+                        legacy.execute('INSERT INTO schema_migrations (version) VALUES (%s)', (path.name,))
+                self.assertIsNone(legacy.execute('SELECT canonical_job_id FROM source_jobs').fetchone()['canonical_job_id'])
+                db.initialize(legacy)
+                self.assertIsNotNone(legacy.execute('SELECT canonical_job_id FROM source_jobs').fetchone()['canonical_job_id'])
+                self.assertIsNone(legacy.execute("SELECT to_regclass('jobs') AS name").fetchone()['name'])
+                self.assertEqual(len(db.list_jobs(legacy)), 1)
+        finally:
+            with psycopg.connect(os.environ['TEST_DATABASE_URL'], autocommit=True) as admin:
+                admin.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(legacy_schema)))
+
+
+    def test_canonical_database_projection_has_exact_contract_columns(self):
+        columns = self.conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'canonical_jobs' ORDER BY ordinal_position").fetchall()
+        self.assertEqual([row['column_name'] for row in columns], ['id', 'company', 'title', 'location', 'application_url', 'posted_at', 'status'])
+        db.save_job(self.conn, self.job)
+        row = self.conn.execute('SELECT * FROM canonical_jobs').fetchone()
+        self.assertEqual(row['application_url'], self.job.url)
+        self.assertEqual(row['id'], db.get_source_job(self.conn, self.job.source, self.job.external_id).canonical_job_id)

@@ -8,6 +8,7 @@ const message = document.querySelector('#message');
 const list = document.querySelector('#list');
 const reload = document.querySelector('#reload');
 let jobs = [];
+const jobContexts = new Map();
 let loaded = false;
 
 function element(tag, text, className) {
@@ -30,30 +31,32 @@ function render() {
   if (!loaded) return;
   const query = search.value.trim().toLowerCase();
   const visible = jobs.filter(job => {
-    const keywords = job.keywords || {};
-    const text = [job.company, job.title, job.location, job.term, sourceNames.get(job.source), ...Object.values(keywords).flat()].join(' ').toLowerCase();
-    return (status.value === 'all' || job.status === status.value) && (sourceFilter.value === 'all' || job.source === sourceFilter.value) && text.includes(query);
+    const context = jobContexts.get(job.id);
+    const keywords = context.keywords || {};
+    const text = [job.company, job.title, job.location, context.term, ...(context.sources || []).flatMap(record => [sourceNames.get(record.source), record.company, record.title, record.location]), ...Object.values(keywords).flat()].join(' ').toLowerCase();
+    return (status.value === 'all' || job.status === status.value) && (sourceFilter.value === 'all' || (context.sources || []).some(record => record.source === sourceFilter.value && !['closed', 'dead'].includes(record.status))) && text.includes(query);
   });
-  summary.textContent = `${visible.length.toLocaleString()} of ${jobs.length.toLocaleString()} jobs`;
+  summary.textContent = `${visible.length.toLocaleString()} of ${jobs.length.toLocaleString()} jobs · ${jobs.reduce((count, job) => count + jobContexts.get(job.id).sources.length, 0).toLocaleString()} source records`;
   rows.replaceChildren();
   list.hidden = visible.length === 0;
   message.hidden = visible.length > 0;
   message.textContent = jobs.length ? 'No jobs match your filters. Try another search or status.' : 'No internships available yet. Check back soon.';
   const fragment = document.createDocumentFragment();
   for (const job of visible) {
+    const context = jobContexts.get(job.id);
     const row = document.createElement('tr');
     const title = document.createElement('td');
     const details = element('button', job.title || 'Untitled role', 'role details-link');
     details.type = 'button';
     details.addEventListener('click', () => showDetails(job.id));
-    title.append(element('span', job.company || 'Unknown company', 'company'), details, element('span', sourceNames.get(job.source) || job.source, 'source-label'));
-    row.append(title, element('td', job.location || 'Not specified'), element('td', job.term || 'Not specified', job.term ? '' : 'muted'));
+    title.append(element('span', job.company || 'Unknown company', 'company'), details, element('span', [...new Set((context.sources || []).map(record => sourceNames.get(record.source) || record.source))].join(' · '), 'source-label'));
+    row.append(title, element('td', job.location || 'Not specified'), element('td', context.term || 'Not specified', context.term ? '' : 'muted'));
     const state = document.createElement('td');
     const jobStatus = ['open', 'closed'].includes(job.status) ? job.status : 'unknown';
     state.append(element('span', jobStatus, `badge ${jobStatus}`));
     row.append(state, element('td', job.posted_at || '—'));
     const action = document.createElement('td');
-    const url = applicationUrl(job.url);
+    const url = applicationUrl(job.application_url);
     if (jobStatus === 'open' && url) {
       const link = element('a', 'Apply ↗', 'apply');
       link.href = url;
@@ -74,11 +77,13 @@ async function load() {
   reload.disabled = true;
   summary.textContent = 'Loading jobs…';
   try {
-    const response = await fetch('/api/jobs', { cache: 'no-store' });
+    const response = await fetch('/api/feed', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    if (!Array.isArray(data) || data.some(job => !job || typeof job !== 'object')) throw new Error('Invalid job data');
-    jobs = data;
+    if (!Array.isArray(data) || data.some(entry => !entry?.job || !Array.isArray(entry.sources))) throw new Error('Invalid job data');
+    jobContexts.clear();
+    for (const entry of data) jobContexts.set(entry.job.id, entry);
+    jobs = data.map(entry => entry.job);
     loaded = true;
     render();
   } catch (error) {
@@ -127,21 +132,33 @@ async function showDetails(id) {
   detailContent.replaceChildren(element('p', 'Loading job details…'));
   dialog.showModal();
   try {
-    const response = await fetch(`/api/jobs/${id}`, { cache: 'no-store' });
+    const response = await fetch(`/api/jobs/${id}/details`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const job = await response.json();
+    const context = await response.json();
+    const job = context.job;
     if (request !== detailRequest) return;
     detailContent.replaceChildren(
       element('p', job.company, 'company'),
       element('h2', job.title),
-      element('p', [job.location, job.term, job.status].filter(Boolean).join(' · '), 'muted')
+      element('p', [job.location, context.term, job.status].filter(Boolean).join(' · '), 'muted')
     );
-    const sourceLink = element('a', sourceNames.get(job.source) || 'Source repository');
-    sourceLink.href = applicationUrl(job.source) || '#';
-    sourceLink.target = '_blank';
-    sourceLink.rel = 'noopener noreferrer';
-    detailContent.append(sourceLink);
-    const keywords = job.keywords || {};
+    detailContent.append(element('p', `Canonical job #${job.id}`, 'muted'));
+    const provenance = document.createElement('details');
+    provenance.append(element('summary', `Source records (${context.sources.length})`));
+    const observations = document.createElement('ul');
+    for (const record of context.sources) {
+      const entry = document.createElement('li');
+      const sourceLink = element('a', sourceNames.get(record.source) || 'Source repository');
+      sourceLink.href = applicationUrl(record.source) || '#';
+      sourceLink.target = '_blank';
+      sourceLink.rel = 'noopener noreferrer';
+      entry.append(sourceLink, element('p', `Source job #${record.id} · ${record.status} · ${record.title}`, 'muted'),
+        element('p', `Within-source ID: ${record.external_id}`, 'source-identity'));
+      observations.append(entry);
+    }
+    provenance.append(observations);
+    detailContent.append(provenance);
+    const keywords = context.keywords || {};
     for (const [key, label] of [['languages', 'Languages'], ['frameworks', 'Frameworks'], ['tools_and_platforms', 'Tools & platforms'], ['concepts', 'Concepts']]) {
       if (keywords[key]?.length) {
         detailContent.append(element('h3', label));
@@ -158,9 +175,9 @@ async function showDetails(id) {
       detailContent.append(requirements);
     }
     detailContent.append(element('h3', 'Job description'));
-    detailContent.append(element('p', job.description || 'A description is not available for this listing yet. Visit the application page for the full posting.', 'description'));
-    if (job.description) detailContent.append(element('p', 'Keywords are extracted mentions and may include preferred skills.', 'muted'));
-    const url = applicationUrl(job.url);
+    detailContent.append(element('p', context.description || 'A description is not available for this listing yet. Visit the application page for the full posting.', 'description'));
+    if (context.description) detailContent.append(element('p', 'Keywords are extracted mentions and may include preferred skills.', 'muted'));
+    const url = applicationUrl(job.application_url);
     if (job.status === 'open' && url) {
       const link = element('a', 'View application ↗', 'apply');
       link.href = url;
@@ -197,7 +214,8 @@ function showSync(run) {
   syncStatus.textContent = syncing
     ? (run.stage === 'fetching' || !total ? `Fetching ${run.current_source || 'the latest listings'}…` : `Processing ${run.current_source || 'sources'}: ${processed} of ${total} listings. ${run.current_job || ''}`)
     : run.status === 'success' ? 'Sync complete.' : 'Sync ended with errors. Successfully saved jobs are available; try syncing again.';
-  syncCounts.textContent = `${run.inserted || 0} new · ${run.updated || 0} updated · ${run.skipped_duplicates || 0} duplicates · ${run.failed || 0} failed · ${run.enrichment_successes || 0} descriptions read · ${run.closed || 0} closed skipped · ${run.dead_links || 0} dead links hidden`;
+  syncCounts.textContent = `${run.inserted || 0} new source records · ${run.updated || 0} updated · ${run.skipped_duplicates || 0} duplicates · ${run.failed || 0} failed · ${run.enrichment_successes || 0} descriptions read · ${run.closed || 0} closed skipped · ${run.dead_links || 0} dead links hidden`;
+  if (run.reconciliation) syncCounts.textContent += ` · ${run.reconciliation.visible_jobs} unique available jobs · ${run.reconciliation.duplicate_listings_removed} duplicate listings removed`;
   const sources = (run.sources || []).map(source => `${source.name}: ${source.scraped || 0} scraped, ${source.failed || 0} failed (${source.status})`);
   if (sources.length) syncCounts.textContent += ' · ' + sources.join(' · ');
 }

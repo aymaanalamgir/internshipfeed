@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .models import JobListing
+from .models import CanonicalJob, JobDetails
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
 from .sources import SOURCES
@@ -46,14 +46,29 @@ def sources():
     return [{"key": source.key, "name": source.name, "url": source.url} for source in SOURCES]
 
 
-@app.get("/api/jobs", response_model=List[JobListing])
+@app.get("/api/jobs", response_model=List[CanonicalJob])
 def jobs(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
          source: Optional[str] = None, conn=Depends(connection)):
     return db.list_jobs(conn, status=status, query=q, source=source)
 
 
-@app.get("/api/jobs/{job_id}", response_model=JobListing)
+@app.get("/api/feed", response_model=List[JobDetails])
+def feed(status: Optional[Literal["open", "closed", "unknown"]] = None,
+         q: Optional[str] = Query(default=None, max_length=200),
+         source: Optional[str] = None, conn=Depends(connection)):
+    return db.list_job_details(conn, status=status, query=q, source=source)
+
+
+@app.get("/api/jobs/{job_id}/details", response_model=JobDetails)
+def job_details(job_id: int, conn=Depends(connection)):
+    result = db.get_job_details(conn, job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return result
+
+
+@app.get("/api/jobs/{job_id}", response_model=CanonicalJob)
 def job(job_id: int, conn=Depends(connection)):
     result = db.get_job(conn, job_id)
     if result is None:
