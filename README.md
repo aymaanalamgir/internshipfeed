@@ -81,9 +81,19 @@ Environment variables take precedence over `.env`.
 In another terminal with the environment activated:
 
 ```sh
+# Build the React profile interface (Node.js 22.12+).
+npm --prefix frontend ci
+npm --prefix frontend run build
+
 python -m internshipfeed.db
 python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
+
+The existing jobs feed remains at `/` and `/feed`. The React + TypeScript profile
+screen is at **http://127.0.0.1:8000/profile**. It edits the existing profile and
+uploads PDFs through the backend APIs. Build output is ignored by Git; rebuild
+after frontend changes. [Frontend setup and architecture](docs/frontend.md)
+includes the optional Vite development workflow.
 
 Open **http://localhost:8000** and click **Sync & enrich** to run both enabled
 sources. The background workflow fetches, snapshots, parses, normalizes, optionally
@@ -224,8 +234,11 @@ are documented in **[docs/matching.md](docs/matching.md)**.
 curl 'http://127.0.0.1:8000/api/recommendations?min_score=20'
 ```
 
-Interaction helpers remain storage foundations. Profile editing UI,
-résumé-to-profile suggestions, a recommendations UI, and authentication are future work.
+The profile UI supports tag editing, explicit saves, inline feedback, and PDF
+uploads. Uploaded filenames are shown for the current browser session; there is
+no résumé-history API. Uploads do not change the form or candidate preferences.
+Interaction helpers remain storage foundations. Résumé-to-profile suggestions,
+a recommendations UI, and authentication are future work.
 
 ## Tests
 
@@ -238,7 +251,16 @@ python scripts/test_with_existing_postgres.py
 
 # Or explicitly launch a disposable server (requires local-postgres extra).
 python scripts/test_with_postgres.py
+
+# Frontend pure-function tests and TypeScript/production-build checks.
+npm --prefix frontend test
+npm --prefix frontend run build
 ```
+
+With the built interface and backend running, `scripts/check_profile_ui.py` checks
+the profile in a browser. It restores original preferences afterward and appends
+one generated sample résumé to development upload history. See
+[docs/frontend.md](docs/frontend.md#verification) for the exact command and checks.
 
 Tests cover source parsing, snapshot deduplication/ownership, per-source runs,
 raw versus normalized values, within-source identities, cross-source URL matching,
@@ -262,3 +284,4 @@ visibility, stable tie-breaking, and ranking changes after profile updates.
 - `db.py`, `migrations/`: PostgreSQL configuration, lineage, repositories, and schema.
 - `ingestion.py`, `sync.py`, `cli.py`: source runs, batch progress, background workflow.
 - `api.py`, `web/`: database-backed API and UI.
+- `frontend/`: React + TypeScript profile UI, Vite build, and self-hosted fonts.

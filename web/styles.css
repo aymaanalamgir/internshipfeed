@@ -1,6 +1,12 @@
 :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #193029; background: #f5f7f5; font-synthesis: none; }
 * { box-sizing: border-box; }
 body { margin: 0; }
+.site-nav { max-width: 1200px; margin: auto; padding: 20px 28px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e1e7e2; font-size: 13px; }
+.site-nav a { color: #65736c; text-decoration: none; }
+.site-nav .site-brand { color: #193029; font-size: 16px; font-weight: 600; }
+.site-brand span { color: #a44c30; }
+.site-nav > div { display: flex; gap: 26px; }
+.site-nav a[aria-current] { color: #193029; font-weight: 600; }
 main { max-width: 1200px; margin: auto; padding: 64px 28px 32px; }
 .eyebrow { font-size: 11px; letter-spacing: .16em; font-weight: 700; color: #527366; margin: 0 0 14px; }
 h1 { font-size: clamp(32px, 5vw, 46px); letter-spacing: -.06em; margin: 0; }

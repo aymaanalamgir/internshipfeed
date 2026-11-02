@@ -296,8 +296,10 @@ creating a candidate. Uploads follow the existing local-only mutation policy.
 records. There is no uniqueness constraint that overwrites interaction history.
 
 Repository helpers expose the development profile, append interaction events,
-and save extracted résumé text. Profile editing UI, résumé-to-profile suggestions,
-authentication, and interaction endpoints are future work.
+and save extracted résumé text. The React profile interface at `/profile` consumes
+GET/PUT profile and POST résumé APIs; the existing vanilla feed remains at `/feed`.
+See [frontend.md](frontend.md) for build and development details. Résumé-to-profile
+suggestions, authentication, and interaction endpoints are future work.
 
 ## On-request recommendations
 

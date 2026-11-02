@@ -194,9 +194,20 @@ def health(conn=Depends(connection)):
 
 
 @app.get("/", include_in_schema=False)
+@app.get("/feed", include_in_schema=False)
 def index():
     return FileResponse(db.ROOT / "index.html")
 
 
+@app.get("/profile", include_in_schema=False)
+@app.get("/profile/", include_in_schema=False)
+def profile_page():
+    path = db.ROOT / 'frontend' / 'dist' / 'index.html'
+    if not path.is_file():
+        raise HTTPException(503, 'The profile interface is unavailable. Build the frontend first.')
+    return FileResponse(path)
+
+
 # Serve only UI assets; snapshots, .env, and data exports are not public routes.
 app.mount("/web", StaticFiles(directory=db.ROOT / "web"), name="web")
+app.mount("/profile/assets", StaticFiles(directory=db.ROOT / "frontend" / "dist" / "assets", check_dir=False), name="profile-assets")
