@@ -20,6 +20,9 @@ flowchart TD
     JS[(job_sources)] --> F
     CAND[Candidate] --> PROFILE[FastAPI profile API]
     PROFILE --> CP[(candidate_profiles)]
+    CP --> MATCH[Deterministic matching]
+    C --> MATCH
+    MATCH --> RECS[Recommendations API]
     CP[(candidate_profiles)] --> E[(job_interactions)]
     C --> E
     CP --> RES[(resumes: extracted text and metadata)]
@@ -146,6 +149,7 @@ remain local diagnostics/replay artifacts.
 - `GET /api/profile`: the seeded development candidate profile, including ID and timestamps.
 - `PUT /api/profile`: replace all five editable fields; return the normalized, persisted profile.
 - `POST /api/resumes`: upload one PDF in multipart field `file`; return HTTP 201 with metadata and extracted text.
+- `GET /api/recommendations`: scored visible canonical jobs with component scores, matched skills, and reasons; optional `min_score=0..100` (default 0).
 - `GET /api/sources`: configured datasets, including source IDs and enabled state.
 - `GET /api/jobs`: seven-field canonical jobs; optional `source_id` (dataset ID), `source` (repository URL), `status`, and `q` filters.
 - `GET /api/jobs/{id}`: a canonical job; merged IDs resolve to their survivor.
@@ -203,8 +207,25 @@ does not modify the candidate profile or send its contents to external services.
 The response contains `id`, `candidate_profile_id`, `filename`, `extracted_text`,
 and `uploaded_at`. A résumé history endpoint and upload UI are not part of this slice.
 
+Candidate Profile + Canonical Jobs → Deterministic Matching → Recommendations API
+is implemented. It uses string rules and explicit aliases: role **40**, detected
+job-skill overlap **30**, location **20**, and term **10** points. Every awarded
+component includes its matching evidence. Active alternate source titles,
+locations, and terms supplement the representative canonical fields. Equal scores
+sort by newer exact posting date (missing dates last), then descending canonical ID.
+
+Scores are calculated on each request and are not stored. Empty preferences or
+missing metadata earn zero in that dimension. There is no AI, résumé-text ranking,
+interaction-based ranking, or automatic profile mutation. The existing feed/UI
+continues to use its normal ordering. Exact rules, rounding, mappings, and examples
+are documented in **[docs/matching.md](docs/matching.md)**.
+
+```sh
+curl 'http://127.0.0.1:8000/api/recommendations?min_score=20'
+```
+
 Interaction helpers remain storage foundations. Profile editing UI,
-résumé-to-profile suggestions, recommendations/matching, and authentication are future work.
+résumé-to-profile suggestions, a recommendations UI, and authentication are future work.
 
 ## Tests
 
@@ -226,6 +247,9 @@ profile seeding, profile API validation/persistence/timestamps, résumé PDF upl
 local text extraction, format/size/page limits, résumé history and resource closure,
 event append semantics, and API/UI contracts. Database tests isolate both their
 schemas and advisory sync-lock keys from the running application.
+Matching tests cover explicit role/skill aliases, technical-token boundaries,
+Canadian/remote geography, season/year pairing, explanations, exact totals,
+visibility, stable tie-breaking, and ranking changes after profile updates.
 
 ## Modules
 
@@ -233,6 +257,7 @@ schemas and advisory sync-lock keys from the running application.
 - `records.py`, `normalize.py`, `models.py`: shared intermediate/domain contracts.
 - `enrich.py`: description and deterministic keyword extraction.
 - `resumes.py`: bounded local PDF text extraction and conservative cleanup.
+- `matching.py`: pure deterministic scoring, explanations, and recommendation ordering.
 - `reconciliation.py`: URL matching, explainable mappings, canonical metadata refresh.
 - `db.py`, `migrations/`: PostgreSQL configuration, lineage, repositories, and schema.
 - `ingestion.py`, `sync.py`, `cli.py`: source runs, batch progress, background workflow.

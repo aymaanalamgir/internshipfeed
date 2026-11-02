@@ -156,6 +156,19 @@ class JobDetails(BaseModel):
     sources: List[SourceJobReference]
 
 
+class MatchResult(BaseModel):
+    """On-request score with component values and the evidence behind them."""
+    model_config = ConfigDict(extra="forbid")
+    job: CanonicalJob
+    score: int = Field(ge=0, le=100)
+    role_score: int = Field(ge=0, le=40)
+    skills_score: int = Field(ge=0, le=30)
+    location_score: int = Field(ge=0, le=20)
+    term_score: int = Field(ge=0, le=10)
+    matched_skills: List[str]
+    reasons: List[str]
+
+
 class StoredCanonicalJob(CanonicalJob):
     """Persisted metadata; CanonicalJob remains the small public API contract."""
     description: Optional[str]

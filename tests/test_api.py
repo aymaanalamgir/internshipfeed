@@ -71,6 +71,13 @@ class ApiFailureTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertNotIn('private database details', response.text)
 
+    def test_recommendations_unavailable_database_returns_503(self):
+        with patch('internshipfeed.api.db.connect', side_effect=psycopg.OperationalError('private database details')):
+            with TestClient(app) as client:
+                response = client.get('/api/recommendations')
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn('private database details', response.text)
+
     def test_resume_insert_failure_does_not_log_document_or_database_details(self):
         private_text = 'Private Candidate Resume Content'
         with patch.dict(app.dependency_overrides, {connection: lambda: object()}), \

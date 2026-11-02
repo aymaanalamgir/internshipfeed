@@ -6,7 +6,7 @@ import time
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -563,6 +563,88 @@ class DatabaseTests(unittest.TestCase):
             response = client.put('/api/profile', json=payload, headers={'Origin': 'https://evil.example'})
         self.assertEqual(response.status_code, 403)
         self.assertEqual(db.development_profile(self.conn), before)
+
+    def test_recommendations_components_source_evidence_visibility_and_stable_order(self):
+        from internshipfeed.sources import SIMPLIFY
+        payload = {'target_roles': ['Backend Engineering'], 'skills': ['Python', 'Postgres', 'Docker'],
+                   'preferred_locations': ['Toronto'], 'preferred_terms': ['Summer 2027'], 'graduation_year': 2027}
+        primary = self.job.model_copy(update={'external_id': 'recommended-main', 'title': 'General Intern',
+                                              'location': 'Unknown', 'term': 'Winter 2027', 'posted_at': date(2026, 10, 15),
+                                              'keywords': JobKeywords(languages=['Python'], tools_and_platforms=['PostgreSQL', 'Docker']),
+                                              'enrichment_status': 'success'})
+        self.save(primary)
+        self.save(primary.model_copy(update={'source': SIMPLIFY.url, 'external_id': 'recommended-peer',
+                                             'title': 'Backend Software Engineering Intern', 'location': 'Toronto, ON',
+                                             'term': 'Summer 2027'}))
+        expected_id = db.get_source_job(self.conn, primary.source, primary.external_id).canonical_job_id
+        tie_ids = []
+        for index, posted in enumerate((date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 2), None)):
+            record = primary.model_copy(update={'external_id': 'tie-' + str(index), 'url': 'https://example.com/job/tie-' + str(index),
+                                                 'title': 'Backend Engineer Intern', 'location': 'Vancouver, BC', 'term': None,
+                                                 'posted_at': posted, 'keywords': JobKeywords(languages=['Python'], tools_and_platforms=['Docker'])})
+            self.save(record)
+            tie_ids.append(db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id)
+        for status in ('closed', 'dead', 'unknown'):
+            self.save(primary.model_copy(update={'external_id': status, 'url': 'https://example.com/job/' + status,
+                                                 'status': status, 'title': 'Product Management Intern', 'location': 'Vancouver, BC',
+                                                 'keywords': JobKeywords(), 'term': None}))
+        before = self.conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall()
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual(client.put('/api/profile', json=payload).status_code, 200)
+            response = client.get('/api/recommendations')
+            self.assertEqual(response.status_code, 200)
+            results = response.json()
+            self.assertEqual([row['score'] for row in results], [100, 70, 70, 70, 70, 0])
+            self.assertEqual([row['job']['id'] for row in results[:5]], [expected_id, tie_ids[2], tie_ids[1], tie_ids[0], tie_ids[3]])
+            best = results[0]
+            self.assertEqual((best['role_score'], best['skills_score'], best['location_score'], best['term_score']), (40, 30, 20, 10))
+            self.assertEqual(best['matched_skills'], ['Docker', 'PostgreSQL', 'Python'])
+            self.assertEqual(len(best['reasons']), 4)
+            self.assertIn('Backend Software Engineering Intern', best['reasons'][0])
+            self.assertIn('Toronto, ON', best['reasons'][2])
+            self.assertIn('Summer 2027', best['reasons'][3])
+            self.assertEqual(set(best['job']), {'id', 'company', 'title', 'location', 'application_url', 'posted_at', 'status'})
+            self.assertTrue(all(row['job']['status'] not in {'closed', 'dead'} for row in results))
+            self.assertEqual(results[-1]['job']['status'], 'unknown')
+            self.assertEqual(client.get('/api/recommendations?min_score=100').json(), [best])
+            self.assertEqual(client.get('/api/recommendations').json(), results)
+        self.assertEqual(self.conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall(), before)
+
+    def test_recommendations_change_with_profile_and_ignore_resume_and_interactions(self):
+        for title, external in [('Backend Engineer Intern', 'backend'), ('Product Management Intern', 'product')]:
+            self.save(self.job.model_copy(update={'external_id': external, 'url': 'https://example.com/job/' + external,
+                                                  'title': title, 'term': None, 'keywords': JobKeywords()}))
+        empty = {'target_roles': [], 'skills': [], 'preferred_locations': [], 'preferred_terms': [], 'graduation_year': None}
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual([row['score'] for row in client.get('/api/recommendations').json()], [0, 0])
+            self.assertEqual(client.put('/api/profile', json=dict(empty, target_roles=['Backend Engineering'])).status_code, 200)
+            backend = client.get('/api/recommendations').json()
+            self.assertEqual(backend[0]['job']['title'], 'Backend Engineer Intern')
+            self.assertEqual([row['score'] for row in backend], [40, 0])
+            candidate_id = db.development_profile(self.conn)['id']
+            db.save_resume_text(self.conn, candidate_id, 'resume.pdf', 'Product management, Toronto, Summer 2027, Python')
+            db.record_interaction(self.conn, candidate_id, backend[0]['job']['id'], 'dismiss')
+            self.assertEqual(client.get('/api/recommendations').json(), backend)
+            client.put('/api/profile', json=dict(empty, target_roles=['Product Management']))
+            product = client.get('/api/recommendations').json()
+            self.assertEqual(product[0]['job']['title'], 'Product Management Intern')
+            self.assertEqual([row['score'] for row in product], [40, 0])
+
+    def test_recommendations_empty_dataset_and_min_score_validation(self):
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            self.assertEqual(client.get('/api/recommendations').json(), [])
+            for value in ('-1', '101', 'twenty'):
+                with self.subTest(min_score=value):
+                    self.assertEqual(client.get('/api/recommendations?min_score=' + value).status_code, 422)
+            self.assertEqual(client.get('/api/recommendations?min_score=0').status_code, 200)
+
+    def test_recommendations_missing_profile_fails_without_reseeding(self):
+        self.conn.execute('DELETE FROM candidate_profiles')
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            response = client.get('/api/recommendations')
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('Development profile is missing', response.json()['detail'])
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 0)
 
     def test_pdf_resume_upload_persists_text_metadata_and_preserves_profile(self):
         before = db.development_profile(self.conn)

@@ -297,7 +297,27 @@ records. There is no uniqueness constraint that overwrites interaction history.
 
 Repository helpers expose the development profile, append interaction events,
 and save extracted résumé text. Profile editing UI, résumé-to-profile suggestions,
-matching/recommendations, authentication, and interaction endpoints are future work.
+authentication, and interaction endpoints are future work.
+
+## On-request recommendations
+
+Candidate Profile + Canonical Jobs → Deterministic Matching → Recommendations API
+is implemented by `matching.py` and `GET /api/recommendations`. The endpoint reuses
+`development_profile()` and `list_job_details()`; it contains no SQL. The latter
+already provides visible canonical jobs, persisted keyword lists, and alternate
+source observations, so no schema or query changes were necessary.
+
+Matching is rule-based, string-based, skills-based, and explainable. The fixed
+weights are role 40, skills 30, location 20, and term 10. Results contain the same
+seven-field canonical job plus component scores, total, matched skills, and
+evidence reasons. Optional `min_score` is an integer in 0–100, default 0.
+Closed/dead canonical jobs are excluded; unknown status follows feed visibility.
+
+Scores are calculated in Python on each request and never written to PostgreSQL.
+There is no score column or recommendations table. Profile changes affect the next
+request without a backfill. Résumé text, interaction events, graduation year,
+descriptions, and posting dates do not contribute points. Posting date and ID only
+break score ties. See [matching.md](matching.md) for exact rules and limitations.
 
 ## Constraints and indexes
 

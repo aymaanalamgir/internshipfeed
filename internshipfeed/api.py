@@ -11,7 +11,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, Resume
+from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, MatchResult, Resume
+from .matching import rank_jobs
 from .resumes import MAX_UPLOAD_BYTES, ResumeExtractionError, extract_pdf_text
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
@@ -107,6 +108,14 @@ def profile(conn=Depends(connection)):
     if result is None:
         raise HTTPException(503, "Development profile is missing. Initialize the database before using profiles.")
     return result
+
+
+@app.get("/api/recommendations", response_model=List[MatchResult])
+def recommendations(min_score: int = Query(default=0, ge=0, le=100), conn=Depends(connection)):
+    profile = db.development_profile(conn)
+    if profile is None:
+        raise HTTPException(503, "Development profile is missing. Initialize the database before using recommendations.")
+    return rank_jobs(CandidateProfile.model_validate(profile), db.list_job_details(conn), min_score=min_score)
 
 
 @app.put("/api/profile", response_model=CandidateProfile)
