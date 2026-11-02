@@ -14,7 +14,6 @@ from . import db
 from .models import CanonicalJob, JobDetails
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
-from .sources import SOURCES
 
 logger = logging.getLogger(__name__)
 @asynccontextmanager
@@ -42,22 +41,22 @@ def connection():
 
 
 @app.get("/api/sources")
-def sources():
-    return [{"key": source.key, "name": source.name, "url": source.url} for source in SOURCES]
+def sources(conn=Depends(connection)):
+    return db.source_directory(conn)
 
 
 @app.get("/api/jobs", response_model=List[CanonicalJob])
 def jobs(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
-         source: Optional[str] = None, conn=Depends(connection)):
-    return db.list_jobs(conn, status=status, query=q, source=source)
+         source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection)):
+    return db.list_jobs(conn, status=status, query=q, source=source, source_id=source_id)
 
 
 @app.get("/api/feed", response_model=List[JobDetails])
 def feed(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
-         source: Optional[str] = None, conn=Depends(connection)):
-    return db.list_job_details(conn, status=status, query=q, source=source)
+         source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection)):
+    return db.list_job_details(conn, status=status, query=q, source=source, source_id=source_id)
 
 
 @app.get("/api/jobs/{job_id}/details", response_model=JobDetails)
@@ -76,9 +75,20 @@ def job(job_id: int, conn=Depends(connection)):
     return result
 
 
+@app.get("/api/ingestion-batches/latest")
+def latest_batch(conn=Depends(connection)):
+    return db.latest_batch(conn)
+
+
+@app.get("/api/ingestion-runs")
+def ingestion_runs(source_id: Optional[int] = None, conn=Depends(connection)):
+    return db.list_ingestion_runs(conn, source_id=source_id)
+
+
 @app.get("/api/ingestion-runs/latest")
-def ingestion_run(conn=Depends(connection)):
-    return db.latest_run(conn)
+def latest_ingestion_run(conn=Depends(connection)):
+    rows = db.list_ingestion_runs(conn)
+    return rows[0] if rows else None
 
 
 def local_mutation(request):
@@ -100,11 +110,19 @@ def sync_jobs(request: Request):
         raise HTTPException(503, "Unable to start sync. Please try again later.")
 
 
-@app.get("/api/ingestion-runs/{run_id}")
+@app.get("/api/ingestion-batches/{run_id}")
 def sync_progress(run_id: UUID, conn=Depends(connection)):
-    report = db.get_run(conn, run_id)
+    report = db.get_batch(conn, run_id)
     if report is None:
         raise HTTPException(404, "Sync not found")
+    return report
+
+
+@app.get("/api/ingestion-runs/{run_id}")
+def ingestion_run(run_id: UUID, conn=Depends(connection)):
+    report = db.get_ingestion_run(conn, run_id)
+    if report is None:
+        raise HTTPException(404, "Ingestion run not found")
     return report
 
 

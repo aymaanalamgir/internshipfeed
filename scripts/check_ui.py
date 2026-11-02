@@ -13,6 +13,8 @@ with sync_playwright() as playwright:
     page = browser.new_page(viewport={'width': 1280, 'height': 900})
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
+    # Keep a real background sync from consuming the progress fixture below.
+    page.route('**/api/ingestion-batches/latest', lambda route: route.fulfill(json=None))
     page.goto(args.url)
     page.wait_for_function("document.querySelector('#summary').textContent.includes(' of ')")
     page.wait_for_function("document.querySelector('#source').options.length === 3")
@@ -25,8 +27,8 @@ with sync_playwright() as playwright:
     assert page.locator('#jobs tr').count() == all_count > 0
     assert not any(job['status'] in {'closed', 'dead'} for job in saved)
     for source in sources:
-        page.select_option('#source', source['url'])
-        expected = sum(any(record['source'] == source['url'] and record['status'] not in {'closed', 'dead'} for record in entry['sources']) for entry in entries)
+        page.select_option('#source', str(source['id']))
+        expected = sum(any(record['source_id'] == source['id'] and record['status'] not in {'closed', 'dead'} for record in entry['sources']) for entry in entries)
         assert page.locator('#jobs tr').count() == expected
     page.select_option('#source', 'all')
     page.select_option('#status', 'open')
@@ -61,7 +63,8 @@ with sync_playwright() as playwright:
         polls[0] += 1
         route.fulfill(json=run if polls[0] == 1 else dict(run, status='success', processed=2))
     page.route('**/api/sync', lambda route: route.fulfill(status=202, json=run))
-    page.route('**/api/ingestion-runs/latest', progress)
+    page.unroute('**/api/ingestion-batches/latest')
+    page.route('**/api/ingestion-batches/latest', progress)
     page.locator('#sync-jobs').click()
     page.wait_for_function("document.querySelector('#sync-status').textContent.startsWith('Processing ')")
     page.wait_for_function("document.querySelector('#sync-status').textContent === 'Sync complete.'")

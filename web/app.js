@@ -33,8 +33,8 @@ function render() {
   const visible = jobs.filter(job => {
     const context = jobContexts.get(job.id);
     const keywords = context.keywords || {};
-    const text = [job.company, job.title, job.location, context.term, ...(context.sources || []).flatMap(record => [sourceNames.get(record.source), record.company, record.title, record.location]), ...Object.values(keywords).flat()].join(' ').toLowerCase();
-    return (status.value === 'all' || job.status === status.value) && (sourceFilter.value === 'all' || (context.sources || []).some(record => record.source === sourceFilter.value && !['closed', 'dead'].includes(record.status))) && text.includes(query);
+    const text = [job.company, job.title, job.location, context.term, ...(context.sources || []).flatMap(record => [sourceNames.get(record.source_id), record.company, record.title, record.location]), ...Object.values(keywords).flat()].join(' ').toLowerCase();
+    return (status.value === 'all' || job.status === status.value) && (sourceFilter.value === 'all' || (context.sources || []).some(record => String(record.source_id) === sourceFilter.value && !['closed', 'dead'].includes(record.status))) && text.includes(query);
   });
   summary.textContent = `${visible.length.toLocaleString()} of ${jobs.length.toLocaleString()} jobs · ${jobs.reduce((count, job) => count + jobContexts.get(job.id).sources.length, 0).toLocaleString()} source records`;
   rows.replaceChildren();
@@ -49,7 +49,7 @@ function render() {
     const details = element('button', job.title || 'Untitled role', 'role details-link');
     details.type = 'button';
     details.addEventListener('click', () => showDetails(job.id));
-    title.append(element('span', job.company || 'Unknown company', 'company'), details, element('span', [...new Set((context.sources || []).map(record => sourceNames.get(record.source) || record.source))].join(' · '), 'source-label'));
+    title.append(element('span', job.company || 'Unknown company', 'company'), details, element('span', [...new Set((context.sources || []).map(record => sourceNames.get(record.source_id) || record.source))].join(' · '), 'source-label'));
     row.append(title, element('td', job.location || 'Not specified'), element('td', context.term || 'Not specified', context.term ? '' : 'muted'));
     const state = document.createElement('td');
     const jobStatus = ['open', 'closed'].includes(job.status) ? job.status : 'unknown';
@@ -112,9 +112,9 @@ async function loadSources() {
     if (!response.ok) return;
     const sources = await response.json();
     for (const source of sources) {
-      sourceNames.set(source.url, source.name);
+      sourceNames.set(source.id, source.name);
       const option = element('option', source.name);
-      option.value = source.url;
+      option.value = source.id;
       sourceFilter.append(option);
     }
     render();
@@ -148,12 +148,12 @@ async function showDetails(id) {
     const observations = document.createElement('ul');
     for (const record of context.sources) {
       const entry = document.createElement('li');
-      const sourceLink = element('a', sourceNames.get(record.source) || 'Source repository');
+      const sourceLink = element('a', sourceNames.get(record.source_id) || 'Source repository');
       sourceLink.href = applicationUrl(record.source) || '#';
       sourceLink.target = '_blank';
       sourceLink.rel = 'noopener noreferrer';
       entry.append(sourceLink, element('p', `Source job #${record.id} · ${record.status} · ${record.title}`, 'muted'),
-        element('p', `Within-source ID: ${record.external_id}`, 'source-identity'));
+        element('p', `Within-source ID: ${record.external_id} · ${record.match_method} (${record.match_confidence})`, 'source-identity'));
       observations.append(entry);
     }
     provenance.append(observations);
@@ -223,7 +223,7 @@ function showSync(run) {
 async function pollSync() {
   clearTimeout(pollTimer);
   try {
-    const response = await fetch('/api/ingestion-runs/latest', { cache: 'no-store' });
+    const response = await fetch('/api/ingestion-batches/latest', { cache: 'no-store' });
     if (!response.ok) throw new Error('Progress unavailable');
     const run = await response.json();
     const wasSyncing = syncing;

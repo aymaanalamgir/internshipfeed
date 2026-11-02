@@ -28,5 +28,11 @@ def normalize(record, source_url, snapshot_id):
         company=record.company, title=record.title, location=record.location,
         term="; ".join(terms) or record.term, status=record.status, url=record.url,
         posted_at=posted_at, source=source_url, external_id=external_id,
-        snapshot_id=snapshot_id, source_line=record.source_line,
+        snapshot_id=str(snapshot_id), source_line=record.source_line,
+        raw_company=record.raw_company if record.raw_company is not None else record.company,
+        raw_title=record.raw_title if record.raw_title is not None else record.title,
+        raw_location=record.raw_location if record.raw_location is not None else record.location,
+        raw_url=record.raw_url if record.raw_url is not None else record.url,
+        raw_posted_at=record.raw_posted_at if record.raw_posted_at is not None else record.posted_at_raw,
+        raw_row=record.raw_row,
     )

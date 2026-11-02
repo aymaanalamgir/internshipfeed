@@ -14,4 +14,9 @@ class SourceJobRecord(BaseModel):
     term: Optional[str] = None
     external_id: Optional[str] = None
     source_line: int = Field(ge=1)
+    raw_company: Optional[str] = None
+    raw_title: Optional[str] = None
+    raw_location: Optional[str] = None
+    raw_url: Optional[str] = None
+    raw_posted_at: Optional[str] = None
     raw_row: str

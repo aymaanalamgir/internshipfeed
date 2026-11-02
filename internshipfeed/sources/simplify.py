@@ -152,6 +152,8 @@ def parse_simplify(markdown):
                 status="closed" if closed else "open" if url else "unknown",
                 posted_at_raw=raw_date, date_kind=kind, term=default_term,
                 external_id=external_id, source_line=number,
+                raw_company=row["company"], raw_title=row["role"], raw_location=row["location"],
+                raw_url=url, raw_posted_at=raw_date,
                 raw_row="\n".join(lines[number - 1:number]) + "\n" + " | ".join(cells),
             ))
     if not records:

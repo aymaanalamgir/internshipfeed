@@ -19,6 +19,7 @@ class JobListing(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
     id: Optional[int] = None
     canonical_job_id: Optional[int] = None
+    source_id: Optional[int] = None
     company: str = Field(min_length=1)
     title: str = Field(min_length=1)
     location: str = Field(min_length=1)
@@ -37,6 +38,12 @@ class JobListing(BaseModel):
     extraction_method: Optional[str] = None
     resolved_url: Optional[str] = None
     enriched_at: Optional[datetime] = None
+    raw_company: Optional[str] = None
+    raw_title: Optional[str] = None
+    raw_location: Optional[str] = None
+    raw_url: Optional[str] = None
+    raw_posted_at: Optional[str] = None
+    raw_row: Optional[str] = None
     snapshot_id: str
     source_line: int = Field(ge=1)
     first_seen_at: Optional[datetime] = None
@@ -64,7 +71,11 @@ class SourceJobReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     source: str
+    source_id: int
     external_id: str
+    match_method: str
+    match_confidence: float
+    matched_url: Optional[str]
     company: str
     title: str
     location: str
@@ -104,3 +115,13 @@ class JobDetails(BaseModel):
     description: Optional[str]
     keywords: JobKeywords
     sources: List[SourceJobReference]
+
+
+class StoredCanonicalJob(CanonicalJob):
+    """Persisted metadata; CanonicalJob remains the small public API contract."""
+    description: Optional[str]
+    keywords: JobKeywords
+    first_seen_at: datetime
+    last_seen_at: datetime
+    created_at: datetime
+    updated_at: datetime

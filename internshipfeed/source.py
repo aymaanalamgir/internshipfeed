@@ -63,6 +63,8 @@ def parse_readme(markdown):
             "status": "closed" if closed else "open" if url else "unknown",
             "date_posted_raw": plain(row["date posted"]),
             "source_line": number, "raw_row": line,
+            "raw_company": row["company"], "raw_title": row["role"],
+            "raw_location": row["location"], "raw_posted_at": row["date posted"],
         })
     if not records:
         raise ValueError("No internship rows found; the source format may have changed")
