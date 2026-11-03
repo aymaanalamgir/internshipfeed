@@ -1,3 +1,4 @@
+// Link the five job views and open Profile without leaving the current collection.
 import { Icon } from './Icon';
 import type { JobView } from '../types/jobs';
 export function TopNav({ current, profileOpen, onProfile }: { current: JobView | 'listings'; profileOpen: boolean; onProfile: () => void }) {

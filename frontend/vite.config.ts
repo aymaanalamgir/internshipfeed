@@ -1,3 +1,4 @@
+// Configure React builds, production asset paths, and the same-origin development API proxy.
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 

@@ -1,3 +1,4 @@
+// Upload PDFs and fetch resume metadata and technical skill suggestions.
 import type { ResumeMetadata, ResumeSkillSuggestions } from '../types/profile';
 import { requestJson } from './http';
 

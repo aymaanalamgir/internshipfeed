@@ -1,3 +1,4 @@
+"""Verify bounded interaction affinities and deterministic personalized ranking."""
 import unittest
 from datetime import date
 

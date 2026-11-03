@@ -1,3 +1,4 @@
+// Provide accessible modal drawers with keyboard handling and focus restoration.
 import { useEffect, useId, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Icon } from './Icon';

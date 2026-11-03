@@ -1,3 +1,4 @@
+// Verify year/term choices, duplicate prevention, and normalized skill filtering.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { GRADUATION_YEARS, INTERNSHIP_TERMS, addTerm, availableSkills, skillKey } from './profile-options';

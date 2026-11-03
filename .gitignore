@@ -1,3 +1,4 @@
+# Exclude local environments, credentials, generated assets, and runtime data.
 __pycache__/
 *.py[cod]
 *.egg-info/

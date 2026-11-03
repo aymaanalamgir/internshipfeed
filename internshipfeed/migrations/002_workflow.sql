@@ -1,3 +1,4 @@
+-- Support in-progress ingestion runs and prevent concurrent runs for the same source.
 ALTER TABLE ingestion_runs ALTER COLUMN finished_at DROP NOT NULL;
 ALTER TABLE ingestion_runs DROP CONSTRAINT IF EXISTS ingestion_runs_status_check;
 ALTER TABLE ingestion_runs ADD CONSTRAINT ingestion_runs_status_check

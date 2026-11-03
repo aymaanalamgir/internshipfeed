@@ -1,3 +1,4 @@
+// Expose search and metadata filters for the neutral job directory.
 import type { JobDetails, JobSource } from '../types/jobs';
 import type { ListingFilters } from '../lib/listings';
 export function FilterBar({ jobs, sources, filters, onChange }: { jobs: JobDetails[]; sources: JobSource[]; filters: ListingFilters; onChange: (filters: ListingFilters) => void }) {

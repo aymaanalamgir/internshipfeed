@@ -1,3 +1,4 @@
+// Load and explicitly save the development candidate profile.
 import type { CandidateProfile, ProfileValues } from '../types/profile';
 import { requestJson } from './http';
 

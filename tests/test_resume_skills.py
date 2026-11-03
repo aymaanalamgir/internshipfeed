@@ -1,3 +1,4 @@
+"""Verify technical resume skill aliases, phrase boundaries, deduplication, and ordering."""
 import unittest
 
 from internshipfeed.enrich import extract_keywords

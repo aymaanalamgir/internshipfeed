@@ -1,3 +1,4 @@
+// Add predefined internship terms as removable chips without duplicates.
 import { INTERNSHIP_TERMS, addTerm } from '../lib/profile-options';
 import { SkillTag } from './SkillTag';
 export function TermSelector({ values, onChange }: { values: string[]; onChange: (values: string[]) => void }) {

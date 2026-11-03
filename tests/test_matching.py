@@ -1,3 +1,4 @@
+"""Verify explainable role, skill, location, and term scoring rules."""
 import unittest
 from datetime import date, datetime, timezone
 

@@ -1,3 +1,4 @@
+"""Verify enrichment caching, closed-job exclusions, and dead-link failure classification."""
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch

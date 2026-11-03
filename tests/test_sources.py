@@ -1,3 +1,4 @@
+"""Verify registered source parsers produce consistent records, identities, and terms."""
 import unittest
 from pathlib import Path
 

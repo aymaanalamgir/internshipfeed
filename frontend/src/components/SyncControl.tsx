@@ -1,3 +1,4 @@
+// Start ingestion, poll batch progress, and refresh listings after completion.
 import { useEffect, useRef, useState } from 'react';
 import { getLatestSync, updateListings } from '../api/jobs';
 import type { SyncRun } from '../types/jobs';

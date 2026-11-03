@@ -1,3 +1,4 @@
+// Render application links and confirmed Save, Applied, Dismiss, and Restore controls.
 import type { AppliedAction, DismissAction, CanonicalJob, InteractionState, InteractionType, SaveAction } from '../types/jobs';
 import { applicationUrl } from '../lib/workflow';
 import { Icon } from './Icon';

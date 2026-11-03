@@ -1,3 +1,4 @@
+// Manage editable profile drafts and persist changes only on explicit Save.
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { CandidateProfile, TagField } from '../types/profile';

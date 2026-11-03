@@ -1,3 +1,4 @@
+"""Verify bounded PDF extraction, resource cleanup, and upload error handling."""
 import unittest
 from io import BytesIO
 from unittest.mock import MagicMock, patch

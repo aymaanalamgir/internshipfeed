@@ -1,3 +1,4 @@
+// Render the shared SVG icon vocabulary used throughout the interface.
 export type IconName = 'bookmark' | 'clock' | 'close' | 'external' | 'user' | 'refresh' | 'plus';
 export function Icon({ name, filled = false }: { name: IconName; filled?: boolean }) {
   const paths: Record<IconName, string> = {

@@ -1,3 +1,4 @@
+"""Verify Canadian parsing, normalization, and deterministic job-description extraction."""
 import json
 import unittest
 from datetime import date

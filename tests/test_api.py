@@ -1,3 +1,4 @@
+"""Verify API input validation, access guards, and sanitized storage-failure responses."""
 import unittest
 from unittest.mock import patch
 

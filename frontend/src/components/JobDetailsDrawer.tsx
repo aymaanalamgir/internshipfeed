@@ -1,3 +1,4 @@
+// Load job descriptions, technical metadata, provenance, and shared actions in a drawer.
 import { useEffect, useState } from 'react';
 import { getJobDetails } from '../api/jobs';
 import type { JobDetails, JobSource, JobView } from '../types/jobs';

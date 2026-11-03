@@ -1,3 +1,4 @@
+// Filter directory metadata locally while preserving server ordering.
 import type { JobDetails } from '../types/jobs';
 export interface ListingFilters { query: string; location: string; term: string; source: string; status: string; }
 export const emptyFilters = (): ListingFilters => ({ query: '', location: '', term: '', source: '', status: '' });

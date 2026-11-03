@@ -1,3 +1,4 @@
+// Read authoritative job state and append candidate interaction events.
 import type { InteractionReceipt, InteractionState, InteractionType } from '../types/jobs';
 import { requestJson } from './http';
 

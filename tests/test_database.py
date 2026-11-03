@@ -1,4 +1,4 @@
-"""Real PostgreSQL tests; run with scripts/test_with_postgres.py or TEST_DATABASE_URL."""
+"""Verify PostgreSQL persistence, API contracts, migrations, and workflows in isolated schemas."""
 import json
 import os
 import tempfile

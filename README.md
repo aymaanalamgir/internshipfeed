@@ -1,396 +1,342 @@
 # InternshipFeed
 
-InternshipFeed collects GitHub internship listings into one searchable,
-deduplicated feed. Each repository has its own parser; both feed one normalizer
-and the same PostgreSQL repository.
+**Problem Statement:** Canadian students are often limited towards co-op portals and LinkedIn when searching for tech internships. These postings tend to be generalized and it may be difficult for students to see which postings would provide a good fit to their strengths and abilities. InternshipFeed aims to provide a personalized feed of postings based on a students previous experiences, strengths, and interests as an applicant.
 
-```mermaid
-flowchart TD
-    A[Canadian Tech Internships] --> F[Fetch and preserve snapshot]
-    B[Simplify Internships] --> F
-    F --> P[Source-specific parsers]
-    P --> N[SourceJobRecord → normalize → JobListing]
-    N --> SP[(source_postings)]
-    SP --> R[URL reconciliation]
-    R --> MAP[(canonical_job_sources)]
-    MAP --> C[(canonical_jobs)]
-    C --> API[FastAPI → jobs UI]
-    F --> SS[(source_snapshots)]
-    F --> RUN[(ingestion_runs: one per source)]
-    JS[(job_sources)] --> F
-    CAND[Candidate] --> PROFILE[FastAPI profile API]
-    PROFILE --> CP[(candidate_profiles)]
-    CP --> MATCH[Deterministic matching]
-    C --> MATCH
-    MATCH --> RANK[75% profile + 25% behavior]
-    RANK --> RECS[Recommendations API]
-    RECS --> CARDS[React recommendation cards]
-    CARDS --> E[(job_interactions)]
-    E --> BEHAVIOR[Bounded metadata preferences]
-    C --> BEHAVIOR
-    BEHAVIOR --> RANK
-    E --> STATE[SQL-derived candidate state]
-    STATE --> VIEWS[Recommended / Saved / Applied / Dismissed]
-    CP[(candidate_profiles)] --> E[(job_interactions)]
-    C --> E
-    CP --> RES[(resumes: extracted text and metadata)]
-    PDF[Resume PDF upload] --> EXTRACT[Local pdfplumber extraction]
-    EXTRACT --> RES
-    RES --> SKILLS[Deterministic technical skill suggestions]
-    SKILLS --> REVIEW[User review in profile draft]
-    REVIEW --> CP
-    CRON[Daily host cron] --> INGEST[Existing multi-source ingestion]
-    INGEST --> F
-    INGEST --> NEW[Exact new canonical IDs from run]
-    NEW --> DIGEST
-    RANK --> DIGEST[New canonical jobs: threshold and top N]
-    DIGEST --> EMAIL[Resend HTML and text email]
-    EMAIL --> NOTIFICATIONS[(job_notifications)]
+[Architecture](#architecture) · [Ingestion](#ingestion) · [Database](#database) ·
+[Ranking](#ranking) · [Frontend](#frontend) · [API](#api) ·
+[Daily email](#daily-email) · [Run locally](#run-locally) · [Verification](#verification)
+
+## Product requirements
+
+- Combine source listings without duplicate opportunities or lost source identities.
+- Show available descriptions, technical requirements, dates, status, and application links.
+- Explain ranking; preserve reversible Saved, Applied, and Dismissed state.
+- Keep résumé suggestions subject to review and explicit profile saves.
+- Email the best eligible new jobs, with persistent notification deduplication.
+
+## Architecture
+
+![InternshipFeed architecture: source ingestion, PostgreSQL, personalized ranking, résumé skills, and daily email](InternshipFeed_Architecture_Diagram.png)
+
+*Conceptual overview; implementation contracts are specified below.*
+
+**Backend:** Python, FastAPI, Pydantic 2, psycopg 3, and PostgreSQL.
+**Frontend:** React, TypeScript, and Vite. The API, ingestion, and daily command
+share persistence, eligibility, and ranking logic.
+
+<details>
+<summary>Implementation map</summary>
+
+| Area | Code |
+| --- | --- |
+| Fetch, parse, normalize, enrich | [fetch.py](internshipfeed/fetch.py), [source.py](internshipfeed/source.py), [sources/](internshipfeed/sources/), [normalize.py](internshipfeed/normalize.py), [enrich.py](internshipfeed/enrich.py) |
+| Ingestion and reconciliation | [ingestion.py](internshipfeed/ingestion.py), [reconciliation.py](internshipfeed/reconciliation.py) |
+| Contracts and storage | [models.py](internshipfeed/models.py), [db.py](internshipfeed/db.py), [migrations/](internshipfeed/migrations/) |
+| Ranking | [matching.py](internshipfeed/matching.py), [behavioral.py](internshipfeed/behavioral.py), [recommendations.py](internshipfeed/recommendations.py) |
+| Interface | [api.py](internshipfeed/api.py), [frontend/src/](frontend/src/) |
+| Résumés and email | [resumes.py](internshipfeed/resumes.py), [resume_skills.py](internshipfeed/resume_skills.py), [daily_refresh.py](internshipfeed/daily_refresh.py), [notifications.py](internshipfeed/notifications.py) |
+
+</details>
+
+## Ingestion
+
+### Sources and normalization
+
+| Source key | Repository | Dataset/parser |
+| --- | --- | --- |
+| `canadian-tech` | [Canadian Tech Internships](https://github.com/negarprh/Canadian-Tech-Internships-2027) | `main/README.md`; Markdown tables, inherited company names, badges, dates, closed markers. |
+| `simplify` | [SimplifyJobs Summer 2027](https://github.com/SimplifyJobs/Summer2027-Internships) | `dev/README.md`; category HTML tables, location details, companion IDs, document terms. Includes international jobs. |
+
+`job_sources` configures each dataset; the registry binds its key to a parser.
+Python `urllib` fetches source files; Markdown rules and `HTMLParser` parse them.
+Both emit `SourceJobRecord` → `normalize()` → `JobListing`, preserving source
+identity, raw cells, job fields, term/status, snapshot, and enrichment results.
+Relative ages such as `2d` stay raw; missing exact dates remain null.
+
+### Reconciliation and descriptions
+
+- **Within source:** upsert by `(source_id, external_id)`.
+- **Across sources:** compare normalized application URLs, removing known tracking/transport differences while preserving job IDs, path case, and meaningful hash routes. Missing URLs, generic careers pages, and similar titles do not establish a match.
+- **Evidence:** mappings record `exact_application_url`, `resolved_application_url`, or `source_identity`, confidence, and matched URL. Confidence describes the rule decision, not a probability. ATS-specific/fuzzy matching is not implemented.
+- **Enrichment:** respect robots.txt; extract JSON-LD or readable job HTML, then apply explicit technology and requirement-section rules. Blocked/JavaScript-only pages may lack descriptions. Successful descriptions and recent dead-link checks are reused for 24 hours.
+- **Visibility:** closed/dead jobs are excluded from discovery. An active observation can keep a job visible when another source closes it; disappearance alone does not prove closure. Temporary fetch failures do not prove a dead link.
+
+HTTP limits: **20 s timeout, 5 MB responses, two transient-error retries**.
+Posting/mapping/canonical changes commit atomically; row/source failures preserve
+other work. Advisory locks serialize sync/reconciliation. Batch and source reports
+count fetched, parsed, inserted, updated, skipped, and failed records, with separate
+enrichment failures. Parse failures retain snapshots.
+
+## Database
+
+Source observations and canonical opportunities have separate identities.
+Entity IDs use `bigint`, ingestion IDs `UUID`, posting dates `date`, and operational
+timestamps `timestamptz`. Public contracts:
+
+```text
+CanonicalJob { id, company, title, location, application_url, posted_at, status }
+JobDetails   { job: CanonicalJob, term, description, keywords, sources }
 ```
 
-The complete table structure, constraints, identity rules, indexes, migration,
-and example queries are documented in **[docs/database.md](docs/database.md)**.
+Statuses: `open`, `unknown`, `closed`, `dead`. Keywords are JSONB on canonical
+jobs, grouping languages, frameworks, tools/platforms, concepts, and requirements.
 
-Daily automation is available as a one-shot command for external cron:
+| Table | Purpose and important constraints |
+| --- | --- |
+| `job_sources` | Dataset configuration; unique `key` and `(repository, file_path, branch)`. |
+| `source_snapshots` | SHA-256, raw content, optional verified commit SHA, fetch time; unique `(source_id, content_hash)`. Identical content reuses its snapshot. |
+| `source_postings` | Source/external ID, latest snapshot, raw and normalized cells, term/status, enrichment, first/last seen; unique `(source_id, external_id)`. Composite foreign key enforces snapshot ownership. |
+| `canonical_jobs` | Seven public fields plus description, JSONB keywords, first/last seen, created/updated timestamps; materialized from linked observations. Active evidence wins; dates and keyword unions are retained deterministically. |
+| `canonical_job_sources` | Canonical ↔ source-posting mapping, method/confidence/URL evidence; one current assignment per posting. |
+| `canonical_job_identities`, `canonical_job_urls` | Stable identity allocation, merge redirects, and URL aliases; historical IDs continue resolving to the surviving job. |
+| `ingestion_batches`, `ingestion_runs` | Overall sync progress and per-source execution status/counts, timing, snapshot, errors, and diagnostic reports. Batch reports retain exact new canonical IDs. |
+| `candidate_profiles` | `target_roles`, `skills`, `preferred_locations`, `preferred_terms` as `text[]`; nullable integer `graduation_year`; created/updated timestamps. |
+| `resumes` | Candidate ID, filename, extracted text, upload time. Uploads append versions; raw PDF files are not retained. |
+| `job_interactions` | Append-only candidate/job/type/time events; effective flags and dates are computed, not stored. |
+| `job_notifications` | Candidate/job/channel, provider message ID, acceptance time; unique `(candidate_profile_id, canonical_job_id, channel)`. |
+
+[Migrations](internshipfeed/migrations/) are tracked in `schema_migrations`;
+repeatable initialization preserves IDs/events. Snapshots retain dataset versions;
+postings retain their latest observation. Unrecoverable legacy content and unverified
+commit SHAs stay null. PostgreSQL is authoritative; `data/` holds diagnostics.
+
+## Ranking
+
+Rule scores are computed on request. Each dimension takes its best evidence;
+missing preferences/metadata earn zero without reweighting. Graduation is not scored.
+
+| Profile component | Points | Rule |
+| --- | ---: | --- |
+| Role | 0–40 | 40 for a target phrase/shared role family; otherwise 30 for two overlapping tokens including a specialty, 15 for one specialty, or 0. Generic words alone do not match. |
+| Skills | 0–30 | `round_half_up(30 × matched unique job skills / unique detected job skills)`; no detected skills or overlap earns 0. Requirements prose is excluded. |
+| Location | 0–20 | 20 for city/region or explicit remote fit, 15 for province, 8 for country; conflicting known regions block that location match. Remote Canada requires Canadian evidence. |
+| Term | 0–10 | 10 for season+year, 6 for season with a missing year, 4 for year with a missing season. Missing/conflicting evidence earns 0; posting dates never supply terms. |
+
+Normalization folds case/accents/separators while preserving `C++`, `C#`, `.NET`,
+and `Node.js`. Explicit aliases include Postgres → PostgreSQL, K8s → Kubernetes,
+NodeJS → Node.js, Google Cloud → GCP, and Amazon Web Services → AWS. Canonical
+metadata and active source titles/locations/terms supply evidence. Exact taxonomies
+and geographic rules live in [matching.py](internshipfeed/matching.py).
+
+**Behavior:** active signals contribute once per type/current canonical job:
+click **+1**, save **+2**, applied **+4**, dismiss **−3**; internal view is ignored.
+Unsave/Unapplied/Undismiss cancel their corresponding signal. Net job weights
+accumulate per metadata key and are capped at **−10…+10**. Dimension alignment
+averages the target job's keys, including unseen keys as zero; matching locations
+use the full location rule. Role/skill/company/location/term multipliers are
+**4 / 3 / 0.5 / 1 / 0.5**. Missing dimensions remain neutral in the fixed denominator.
+
+```text
+C              = sum(weighted dimension alignments), bounded to −90…+90
+behavior_score = clamp(round_half_up(50 + 50 × C / 90), 0, 100)
+profile_score  = role + skills + location + term
+final_score    = round_half_up(0.75 × profile_score + 0.25 × behavior_score)
+```
+
+Neutral behavior is 50. Order is final score, profile score, exact posting date
+(null last), then canonical ID, descending. `score` remains profile fit; Recommended
+adds `profile_score`, `behavior_score`, `final_score`, and up to two positive behavior
+reasons. **API `min_score` filters profile fit; daily-email minimum filters final score.**
+History views show profile fit and sort by their action time. All listings stays
+chronological. Behavior is derived from saved interactions/current job metadata;
+résumé text, embeddings, and LLMs are not scoring inputs.
+
+## Frontend
+
+### Stack and design
+
+**React 19 + TypeScript + Vite 7**, plain CSS, shared SVG icons, self-hosted IBM
+Plex Sans, and monospace skill tags. Node.js **22.12+** builds the app; FastAPI
+serves its entry and `/profile/assets`. No router/state/UI framework is added.
+
+| Design token | Value / use |
+| --- | --- |
+| Background / surface / muted surface | `#f6f4ef` / `#fffefa` / `#f0eee7` |
+| Text / muted text | `#252522` / `#6c6a63` |
+| Border / stronger border | `#dedbd3` / `#bcb8ae` |
+| Accent / soft accent / error | `#a44c30` / `#f4eae3` / `#993d31` |
+| Spacing / radius | 4, 8, 12, 16, 24, 32, 48 px; 3 px controls/panels, 2 px tags. |
+
+[Tokens](frontend/src/styles/tokens.css) and [styles.css](frontend/src/styles.css)
+control compact typography, thin borders, restrained accents, and responsive layout.
+Apply is primary; other actions are secondary. Tags wrap and narrow navigation
+scrolls. Drawers support focus trapping/restoration, Escape/backdrop close, inert
+backgrounds, and mobile widths. Loading/retry states, accessible labels, keyboard
+focus, and reduced-motion support are shared requirements.
+
+### Tabs and interaction contract
+
+| Tab | Route | Membership and order |
+| --- | --- | --- |
+| Recommended | `/`, `/recommendations` | Active/unknown, not dismissed or applied; personalized rank. Saved-only jobs remain eligible. |
+| All listings | `/listings` | Same discovery eligibility; search and location/term/source/status filters, chronological order, no scores. |
+| Saved | `/saved` | Saved and not dismissed, including applied jobs; latest save first. |
+| Applied | `/applied` | Applied, including saved/dismissed/inactive jobs; latest application first. |
+| Dismissed | `/dismissed` | Dismissed, including saved/applied/inactive jobs; latest dismissal first, with Restore. |
+
+Profile and job details open in drawers over the current tab. `/profile` opens
+Profile over Recommended; `/feed` aliases All listings. Shared components display
+server scores/order, progressively rendering 24 cards or 40 directory rows.
+
+Apply opens HTTP(S) in a new tab (`noopener noreferrer`); click telemetry is
+independent of Applied. Save/Unsave, Applied/Unmark, and Dismiss/Restore set separate
+flags. SQL resolves merged IDs and selects the latest event per family, returning
+flags, dates, and `last_event_id`. React confirms snapshots, rejects stale responses,
+and retains state on failure. Restore preserves Saved/Applied and posting status.
+
+### Profile and résumé
+
+The profile API replaces all five editable fields together. Arrays trim blanks
+and exact duplicates; backend graduation year is an integer 1900–2200 or null.
+The UI offers **2026–2030** plus Not specified, and **Winter/Summer/Fall × 2026–2030**
+term chips with an add dropdown. Existing legacy values remain until edited.
+Roles, skills, and locations stay open-ended tags; only explicit Save commits drafts.
+
+PDFs must be readable, **≤5 MiB and ≤10 pages**. `pdfplumber` extracts text locally;
+no OCR or AI is used. The latest successful résumé supplies controlled technical
+skill suggestions using shared vocabulary/aliases, token boundaries, longest-phrase
+precedence, canonical labels, and stable deduplication. Java/JavaScript,
+C/C++/C#, and React/React Native remain distinct. Generic prose is excluded.
+
+Suggestion chips/Add all update only the draft and exclude selected/pending aliases.
+New PDFs replace suggestions, preserving profile skills. Suggestions retry separately
+from uploads. Metadata/suggestion reads and UI state exclude raw text; the upload
+API returns extracted text. No other preferences are inferred.
+
+## API
+
+FastAPI's **`/docs`** is the full request/response reference. Core surfaces:
+
+| Method/path | Contract |
+| --- | --- |
+| `GET /api/jobs`, `/api/feed` | Candidate-visible canonical jobs or detail envelopes; `q`, `source`, `source_id`, `status` filters. |
+| `GET /api/jobs/{id}`, `/api/jobs/{id}/details` | Single job/detail, resolving merged IDs. |
+| `GET /api/recommendations`, `/api/saved`, `/api/applied`, `/api/dismissed` | Scored collections with SQL-derived state, term, and keywords; Recommended accepts `min_score=0..100`. |
+| `GET /api/profile`, `PUT /api/profile` | Development profile; PUT requires all five fields, rejects extra fields, and returns persisted values. |
+| `POST /api/resumes` | Multipart `file` upload; HTTP 201 with résumé metadata and extracted text. |
+| `GET /api/resumes/latest`, `/api/resumes/{id}/skill-suggestions` | Candidate-scoped metadata or `{resume_id, skills, aliases}`; no raw text. |
+| `GET /api/interactions` | Effective candidate/job state; jobs without events default to false flags. |
+| `POST /api/jobs/{id}/interactions` | `{type: click \| save \| unsave \| applied \| unapplied \| dismiss \| undismiss}`; HTTP 201 event + state snapshot. |
+| `POST /api/sync` | HTTP 202: start or return the active multi-source batch. |
+| `GET /api/sources`, `/api/ingestion-batches/latest`, `/api/ingestion-batches/{uuid}` | Source configuration and overall progress. |
+| `GET /api/ingestion-runs`, `/api/ingestion-runs/latest`, `/api/ingestion-runs/{uuid}` | Per-source execution records; list accepts `source_id`. |
+| `GET /api/health` | Database connectivity. |
+
+The lowest-ID candidate is the development profile; reads never reseed it.
+Writes require loopback clients and a matching supplied Origin. Errors: invalid
+input **422**, missing resource **404**, unavailable storage/profile **503**, PDF
+format/size **415/413**. Multi-user authentication remains a production gap.
+
+## Daily email
+
+External cron runs `python -m internshipfeed.daily_refresh`; FastAPI does not
+schedule jobs. The command refreshes all enabled sources and compares canonical
+identities before/after ingestion under the sync lock. Exact surviving new IDs are
+stored in the batch report; updates and source duplicates are excluded. Neither
+`posted_at` nor inherited `first_seen_at` determines discovery.
+
+The shared ranker selects new, unnotified, eligible matches: **final score ≥60,
+top 5** by default. The official Resend SDK sends one escaped HTML/plain-text digest
+with company, title, score, location, term, matched skills, and application links.
+Private history, résumé text, internal IDs, and score components are excluded.
+
+| Variable | Purpose/default |
+| --- | --- |
+| `DATABASE_URL` | Required PostgreSQL connection. |
+| `DAILY_NOTIFICATION_CHANNEL` | `email`; other values are rejected. |
+| `RESEND_API_KEY` | Required for sending. |
+| `DAILY_EMAIL_FROM`, `DAILY_EMAIL_TO` | Verified Resend sender and one recipient. |
+| `DAILY_EMAIL_MIN_SCORE`, `DAILY_EMAIL_TOP_N` | `60` (0–100), `5` (1–5). |
+| `APP_BASE_URL` | Optional HTTP(S) app link in the footer. |
+
+Environment overrides root `.env`; see [.env.example](.env.example). Configure a
+Resend key and verified sender separately. Ledger writes occur **after acceptance**;
+no SQL transaction spans the network call. Merge-aware candidate/job/email
+uniqueness and Resend's 24-hour payload idempotency prevent ordinary repeats.
+Acceptance is not inbox delivery; check ambiguous send/ledger failures before retrying.
 
 ```sh
-.venv/bin/python -m internshipfeed.daily_refresh --dry-run
+python -m internshipfeed.daily_refresh --dry-run
+python -m internshipfeed.daily_refresh --no-ingest --batch-id BATCH_UUID --dry-run
+# After review/configuration, omit --dry-run to send that retained batch.
 ```
 
-It refreshes both enabled sources, records exact new canonical IDs, reuses the
-personalized ranker, and can send a Resend HTML/plain-text email digest of new
-matches. Defaults are final score ≥60 and at most five jobs. PostgreSQL history
-prevents ordinary duplicate sends, including after canonical merges. Configure
-`RESEND_API_KEY`, `DAILY_EMAIL_FROM`, and `DAILY_EMAIL_TO` in `.env`; the sender must
-be verified in Resend. `DAILY_NOTIFICATION_CHANNEL=email` is the only supported
-channel. Dry runs need no email credentials.
-See **[daily refresh setup, retry behavior, and cron examples](docs/daily-refresh.md)**.
-The schedule is external and is not installed automatically.
-The complete [profile/email implementation report](docs/profile-and-email-report.md)
-lists files, test results, assumptions, and code review points.
+**Dry run persists ingestion**, prints subject/text/HTML, and neither sends nor
+records notifications; credentials are not required. `--no-enrich` and
+`--enrich-limit N` control job-page fetching. Fresh runs do not replay prior unsent
+batches. Empty matches send nothing. Partial ingestion may email successful
+results but exits 1; full/provider failure exits 1, preserving committed ingestion.
+Provider failure writes no ledger rows. Configuration errors exit 2; success/no
+matches exit 0. Daily-command locks prevent overlap; no implicit send retry occurs.
 
-## Sources
+```cron
+0 9 * * * cd /absolute/path/to/internshipfeed && /absolute/path/to/internshipfeed/.venv/bin/python -m internshipfeed.daily_refresh >> /absolute/path/to/internshipfeed/data/daily-refresh.log 2>&1
+```
 
-| Key | Dataset | Format |
-| --- | --- | --- |
-| `canadian-tech` | [Canadian Tech Internships](https://github.com/negarprh/Canadian-Tech-Internships-2027) | `main/README.md`, Markdown table |
-| `simplify` | [SimplifyJobs Summer 2027](https://github.com/SimplifyJobs/Summer2027-Internships) | `dev/README.md`, HTML tables |
+Replace/quote paths and create the log directory before installing the entry.
+This means **09:00 in the cron host's timezone**; DST changes elapsed intervals.
+The host/database must stay awake. [Cron template](scripts/daily_refresh.cron.example)
+is not installed automatically; Compose provides PostgreSQL only.
 
-The supplied Simplify Summer2026 repository link redirects to Summer2027. Its
-2026 archive is a separate file. The parser reads the term from document context;
-relative ages such as `2d` are retained as raw text, not guessed posting dates.
-Simplify includes international listings, so the combined feed is not Canada-only.
+## Run locally
 
-PostgreSQL `job_sources` controls repository, file path, branch, display name, and
-whether a source is enabled. The code registry supplies parser implementations.
-
-## Local setup
-
-Python 3.9+ and PostgreSQL are required:
+Requires **Python 3.9+**, **Node.js 22.12+**, and **PostgreSQL** (Compose uses 16).
 
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -e '.[test]'
-```
-
-Use the configured PostgreSQL service, or Docker:
-
-```sh
+test -f .env || cp .env.example .env
 docker compose up -d --wait
-# Copy only if .env has not already been configured.
-cp .env.example .env
-```
-
-Alternatively the development launcher can run PostgreSQL locally:
-
-```sh
-python -m pip install -e '.[local-postgres]'
-python -m internshipfeed.dev_db
-```
-
-Keep its terminal running. Data is retained in `data/postgres`. Existing `.env`
-configuration is preserved; a connection URL is created only if the file is absent.
-Environment variables take precedence over `.env`.
-
-In another terminal with the environment activated:
-
-```sh
-# Build the React profile interface (Node.js 22.12+).
 npm --prefix frontend ci
 npm --prefix frontend run build
-
 python -m internshipfeed.db
 python -m uvicorn internshipfeed.api:app --host 127.0.0.1 --port 8000
 ```
 
-Open **http://127.0.0.1:8000/** for Recommended. All listings is at `/listings`,
-with Saved, Applied, and Dismissed in the same compact navigation. Profile opens in a drawer;
-click a job title for details without leaving the feed. The legacy `/feed` alias
-opens All listings, and `/profile` opens the Profile drawer over Recommended.
-Profile edits and PDF uploads use the backend APIs. Build output is ignored by Git; rebuild
-after frontend changes. [Frontend setup and architecture](docs/frontend.md)
-includes the optional Vite development workflow.
-Saved jobs are at `/saved`, application history at `/applied`, and dismissed jobs at `/dismissed`. Restart
-FastAPI after updating backend routes.
+Open **http://127.0.0.1:8000/**. Use **Update listings** in All listings to run the
+shared ingestion/enrichment workflow and view progress. After frontend changes,
+rebuild; restart FastAPI after backend changes. For live UI development, run
+`npm --prefix frontend run dev` alongside FastAPI and open port **5173**;
+`BACKEND_URL=http://127.0.0.1:8004` selects a different backend.
 
-Open **http://localhost:8000/listings** and click **Update listings** to run both enabled
-sources. The background workflow fetches, snapshots, parses, normalizes, optionally
-reads descriptions, reconciles URLs, and persists metadata. Progress includes both
-overall batch counts and per-source execution counts.
-
-The small public `CanonicalJob` API contract remains:
-
-```text
-id, company, title, location, application_url, posted_at, status
-```
-
-PostgreSQL stores additional canonical description, keywords, observation, and
-creation/update metadata. The UI reads a `JobDetails` envelope containing the core
-job, term, description, keywords, and source provenance.
-
-## Parsing, descriptions, and reconciliation
-
-The Canadian parser handles inherited companies (`↳`), nested application badges,
-full dates, and closed markers. Simplify parsing handles category HTML tables,
-location details, employer links versus companion links, and stable companion IDs.
-Both emit `SourceJobRecord` and share `normalize()`.
-
-Description extraction checks robots.txt and reads public pages using JSON-LD or
-readable job HTML. Explicit keyword/qualification rules identify technology mentions
-and requirement lines. JavaScript-only or blocked pages can remain unavailable.
-Successful descriptions and recent dead-link checks are reused for 24 hours.
-
-Reconciliation uses normalized application URLs, preserving job identifiers while
-removing known tracking parameters. Similar titles, missing URLs, and generic
-careers pages do not cause a merge. Each source posting retains its own identity;
-the mapping table records its canonical assignment, method, confidence, and URL
-evidence. Confirmed redirects from readable job descriptions can link URL aliases.
-
-A source posting, its mapping, and refreshed canonical metadata commit atomically.
-A source failure does not roll back other sources. Closed/dead listings are hidden
-from the feed; one source closing a listing does not hide another source's open
-observation. Source disappearance alone does not prove closure.
-
-## Optional command line
+An existing PostgreSQL service can replace Compose. Without Docker, install
+`'.[local-postgres]'`, run `python -m internshipfeed.dev_db` in another terminal,
+and keep it running. It retains data under `data/postgres` and creates `.env` only
+when absent; otherwise set `DATABASE_URL` to its printed connection URI.
 
 ```sh
-# Both enabled sources.
-python -m internshipfeed
-
-# Listing metadata only.
-python -m internshipfeed --no-enrich
-
-# One source, or a saved source snapshot.
-python -m internshipfeed --source simplify --no-enrich
-python -m internshipfeed --source simplify --input path/to/README.md --no-enrich
+python -m internshipfeed                                      # All enabled sources
+python -m internshipfeed --source simplify --no-enrich         # Metadata only
+python -m internshipfeed --source simplify --input snapshot.md --no-enrich
 ```
 
-`--input` without `--source` replays Canadian data. `--enrich-limit` caps page attempts,
-`--delay` controls pacing, and `--refresh-descriptions` bypasses the description cache.
+`--input` without a source replays Canadian data; `--enrich-limit`, `--delay`, and
+`--refresh-descriptions` control enrichment. Ignored `data/` artifacts support
+inspection/replay; credentials, snapshots, and exports are not public UI assets.
 
-PostgreSQL is authoritative for source snapshots and ingestion history. Ignored
-`data/snapshots`, `data/source_records.json`, `data/run.json`, and `data/runs` files
-remain local diagnostics/replay artifacts.
-
-## API
-
-- `GET /api/profile`: the seeded development candidate profile, including ID and timestamps.
-- `PUT /api/profile`: replace all five editable fields; return the normalized, persisted profile.
-- `POST /api/resumes`: upload one PDF in multipart field `file`; return HTTP 201 with metadata and extracted text.
-- `GET /api/resumes/latest`: latest development-candidate filename/date metadata, or null; excludes extracted text.
-- `GET /api/recommendations`: eligible jobs ordered by deterministic profile + behavior ranking; unchanged `score`/components, added `profile_score`, `behavior_score`, `final_score`, `behavior_reasons`, and SQL-derived `interaction_state`. Optional `min_score=0..100` still filters profile fit.
-- `GET /api/saved`: saved, nondismissed jobs, including applied jobs; newest save first.
-- `GET /api/applied`: application history, newest applied event first, including closed/dismissed jobs.
-- `GET /api/dismissed`: dismissed history, newest dismissal first, with Restore actions.
-- `POST /api/jobs/{id}/interactions`: append `click`, `save`, `unsave`, `dismiss`, `undismiss`, `applied`, or `unapplied` for the development profile; merged IDs resolve to their surviving canonical job.
-- `GET /api/interactions`: effective flags, latest interaction/save/application timestamps, and event cursor, grouped by current canonical job.
-- `GET /api/sources`: configured datasets, including source IDs and enabled state.
-- `GET /api/jobs`: seven-field canonical jobs; optional `source_id` (dataset ID), `source` (repository URL), `status`, and `q` filters.
-- `GET /api/jobs/{id}`: a canonical job; merged IDs resolve to their survivor.
-- `GET /api/jobs/{id}/details`, `GET /api/feed`: core jobs with separate source/enrichment context.
-- `POST /api/sync`: start or return the active multi-source batch.
-- `GET /api/ingestion-batches/latest`, `GET /api/ingestion-batches/{uuid}`: overall UI progress.
-- `GET /api/ingestion-runs`, `GET /api/ingestion-runs/latest`, `GET /api/ingestion-runs/{uuid}`: per-source operational records; the list accepts `source_id`.
-- `GET /api/health`: database connectivity; `GET /docs`: API documentation.
-
-Sync, profile updates, résumé uploads, and job actions use the existing local-only mutation policy. Internet
-deployment needs an authenticated operator interface and durable background worker
-management.
-
-Candidate profile persistence + FastAPI profile API is implemented using the one
-seeded development profile. PUT requires `target_roles`, `skills`,
-`preferred_locations`, `preferred_terms`, and `graduation_year`, even when clearing
-them with empty lists and null. List items must be strings; whitespace and blank
-items are removed, and exact case-sensitive duplicates keep their first order and
-spelling. Graduation year must be null or an integer from 1900 to 2200, matching
-the existing database constraint. Extra fields (including IDs/timestamps), missing
-fields, and invalid types receive HTTP 422. A missing seed or unavailable database
-receives HTTP 503. Reads never create a profile.
-
-For example, with the application running:
+## Verification
 
 ```sh
-curl http://127.0.0.1:8000/api/profile
-curl -X PUT http://127.0.0.1:8000/api/profile \
-  -H 'Content-Type: application/json' \
-  -d '{"target_roles":["Software Engineering","Backend Engineering"],"skills":["Python","SQL"],"preferred_locations":["Toronto","Ottawa"],"preferred_terms":["Summer 2027"],"graduation_year":2027}'
-curl http://127.0.0.1:8000/api/profile
-```
-
-Résumé PDF upload → local `pdfplumber` text extraction → PostgreSQL `resumes` is
-implemented. Uploads must have a `.pdf` extension (case-insensitive) and contain
-a parseable PDF. `application/pdf` is accepted; missing MIME types or generic
-`application/octet-stream` still require successful parsing. Other MIME types
-and file extensions receive HTTP 415.
-
-The file limit is **5 MiB (5,242,880 bytes)** and the page limit is **10 pages**.
-Oversized files receive HTTP 413 before extraction. Corrupt PDFs, too many pages,
-and PDFs without readable text receive HTTP 422. Scanned/image-only PDFs are
-unsupported: there is no OCR or AI. Page/line order and technical symbols are
-preserved, with normalized line endings and collapsed excess blank lines.
-
-```sh
-curl -X POST -F 'file=@/path/to/resume.pdf;type=application/pdf' \
-  http://127.0.0.1:8000/api/resumes
-```
-
-Every successful upload appends a record for the development profile, preserving
-earlier résumé versions. Only the basename, extracted text, candidate ID, and
-timestamp are stored; PDF bytes and temporary paths are not retained. Extraction
-does not modify the candidate profile or send its contents to external services.
-The response contains `id`, `candidate_profile_id`, `filename`, `extracted_text`,
-and `uploaded_at`; the frontend retains metadata only. Profile's Upload/Replace
-PDF uses the latest résumé for optional technical skill suggestions:
-
-```text
-PDF → pdfplumber → stored extracted text → controlled technical skills
-    → user selects suggestions → local draft → Save changes → candidate profile
-```
-
-`GET /api/resumes/{resume_id}/skill-suggestions` returns candidate-scoped
-`resume_id`, canonical `skills`, and shared normalization `aliases`, without raw
-text. Extraction reuses the job vocabulary and matching aliases, including
-Postgres → PostgreSQL, K8s → Kubernetes, NodeJS → Node.js, and Google Cloud → GCP.
-Longest phrase matching distinguishes React Native/React and C++/C#/C; JavaScript
-does not imply Java. Results are deduplicated and sorted. Generic prose is excluded.
-No AI, OCR, profile inference, or automatic profile writes are involved.
-
-Profile uses 2026–2030 graduation choices (Not specified saves null), fifteen
-Winter/Summer/Fall term choices with removable chips, and open-ended tags for
-roles, skills, and locations. Existing out-of-range years and legacy terms are
-preserved until the user edits them. Suggestions filter normalized saved/draft
-skills, enter only the draft, and persist only on Save. New uploads replace the
-suggestion set, preserving selected skills. Suggestion failures have a separate
-retry and never undo a successful PDF upload. See [frontend details](docs/frontend.md).
-
-Candidate Profile + Canonical Jobs → Deterministic Matching → Recommendations API
-is implemented. It uses string rules and explicit aliases: role **40**, detected
-job-skill overlap **30**, location **20**, and term **10** points. Every awarded
-component includes its matching evidence. Active alternate source titles,
-locations, and terms supplement the representative canonical fields.
-
-Scores are calculated on each request and are not stored. Empty preferences or
-missing metadata earn zero in that dimension. Recommended also derives bounded
-metadata preferences from click (+1), save (+2), applied (+4), and dismiss (−3),
-once per event type/current canonical job. Role, skills, company, location, and
-term affinity produces behavior 0–100, neutral 50. Final rank is 75% profile +
-25% behavior, rounded half up. The existing `score` remains profile fit; the UI
-discloses both signals. Ranking updates on Recommended navigation/refresh.
-The generic feed retains chronological/search ordering. There is no AI,
-résumé-text ranking, stored behavior profile, or automatic profile mutation.
-Exact profile rules are in **[docs/matching.md](docs/matching.md)**; weights,
-normalization, and ranking rules are in **[docs/behavioral.md](docs/behavioral.md)**.
-
-```sh
-curl 'http://127.0.0.1:8000/api/recommendations?min_score=20'
-```
-
-The Profile drawer supports shared skill tags, explicit saves, inline feedback,
-and compact PDF upload/replace. Latest filename/date metadata restores on reopen
-and refresh. Uploads do not change the form or candidate preferences.
-The Recommended and Saved screens offer **Apply → Save → Applied → Dismiss**. Apply opens
-the external application in a new tab and attempts to record a click; a recording
-failure never blocks navigation or implies an application was completed. Save
-uses an active bookmark, Applied uses a clock, and Dismiss removes the card only
-after the server confirms the event. Marking Applied moves the job out of
-discovery and into Applied. It may remain in Saved too. The Applied view shows
-the application date and an Open application link. State returns after refresh. A compact score
-disclosure exposes the unchanged matching breakdown and reasons.
-
-Interaction history is append-only. Effective flags and timestamps are derived in
-SQL and follow canonical merge redirects. Profile scores never use interaction
-state; Recommended uses separate bounded behavioral evidence for ordering.
-Collections and action receipts carry server-derived state, which React consumes
-without replaying events. Click Saved again to unsave, or Applied again to unmark
-it. The latest action in each pair wins, survives refresh, and cancels the
-corresponding preference signal. Dismissed jobs have a **Restore** action that
-appends `undismiss`, removes them from Dismissed, and cancels negative dismissal
-evidence. Saved/Applied flags stay intact; active jobs return to discovery when
-not applied. Migrations `008_reversible_interactions.sql` and
-`011_reversible_dismissals.sql` extend the allowed event types without changing
-historical rows or adding state columns.
-See [docs/interactions.md](docs/interactions.md) for contracts and exact semantics.
-Dismissed/applied jobs are also excluded from normal `/api/jobs` and `/api/feed`
-discovery; the underlying canonical records remain stored. Saved/Applied/Dismissed history
-retains closed, dead, and unlinked jobs. Global ingestion/reconciliation counts
-remain source-level operational records. Authentication is future work.
-
-## Tests
-
-```sh
-# Local unit checks; database tests skip without TEST_DATABASE_URL.
-python -m unittest discover -s tests -v
-
-# Use the existing local PostgreSQL service, isolated test schemas only.
-python scripts/test_with_existing_postgres.py
-
-# Or explicitly launch a disposable server (requires local-postgres extra).
-python scripts/test_with_postgres.py
-
-# Frontend pure-function tests and TypeScript/production-build checks.
+python scripts/test_with_existing_postgres.py  # Isolated schemas on configured server
 npm --prefix frontend test
 npm --prefix frontend run build
+# Optional browser dependency; supply your Chromium executable if needed.
+python -m pip install -e '.[browser]'
+python scripts/check_recommendations_ui.py --browser-executable /path/to/chromium
+python scripts/check_daily_email.py --browser-executable /path/to/chromium
 ```
 
-Prefer `scripts/check_recommendations_ui.py --browser-executable /path/to/chromium`
-for real UI/profile/PDF checks in a disposable schema with automatic server cleanup.
-`check_profile_ui.py` alone restores profile preferences but appends generated
-PDFs to that target database. `check_daily_email.py` verifies fixture ingestion,
-CLI dry run, and rendered email without contacting Resend. See
-[docs/frontend.md](docs/frontend.md#verification) for the exact command and checks.
+Checks cover parsing/deduplication, migrations, merges, ranking, reversible state,
+PDF suggestions, UI/keyboard/mobile behavior, failure isolation, and email dry runs.
+Browser runners clean up temporary schemas/API processes; providers are mocked.
+Prefer the isolated runner: `check_profile_ui.py` alone appends fixture résumés.
+Unit-only command: `python -m unittest discover -s tests -v`; DB tests require
+`TEST_DATABASE_URL`. Previews/screenshots go to `data/screenshots`.
 
-Tests cover source parsing, snapshot deduplication/ownership, per-source runs,
-raw versus normalized values, within-source identities, cross-source URL matching,
-canonical metadata, disabled sources, failure isolation, migration preservation,
-profile seeding, profile API validation/persistence/timestamps, résumé PDF uploads,
-local text extraction, format/size/page limits, résumé history and resource closure,
-event append semantics, and API/UI contracts. Database tests isolate both their
-schemas and advisory sync-lock keys from the running application.
-Matching tests cover explicit role/skill aliases, technical-token boundaries,
-Canadian/remote geography, season/year pairing, explanations, exact totals,
-visibility, stable tie-breaking, and ranking changes after profile updates.
-Behavior tests cover bounded affinities, capped repeated signals, mixed events,
-metadata contributions, exact 75/25 composition, neutral ordering, canonical
-merges, candidate isolation, and unchanged profile fit. Frontend checks cover
-final-score display, preserved server ordering, and separate history-view scores.
-`scripts/check_recommendations_ui.py` runs the action workflow plus the profile
-and feed browser checks against an isolated PostgreSQL schema and removes its
-temporary server/schema afterward. It leaves live candidate history untouched.
-
-## Modules
-
-- `fetch.py`, `sources/`, `source.py`: transport, registry, and source parsers.
-- `records.py`, `normalize.py`, `models.py`: shared intermediate/domain contracts.
-- `enrich.py`: description and deterministic keyword extraction.
-- `resumes.py`: bounded local PDF text extraction and conservative cleanup.
-- `matching.py`: unchanged profile scoring, explanations, shared normalization, and profile ordering.
-- `behavioral.py`: ephemeral interaction affinities and bounded preference scoring.
-- `recommendations.py`: independent score composition and personalized ordering.
-- `reconciliation.py`: URL matching, explainable mappings, canonical metadata refresh.
-- `db.py`, `migrations/`: PostgreSQL configuration, lineage, repositories, and schema.
-- `ingestion.py`, `sync.py`, `cli.py`: source runs, batch progress, background workflow.
-- `api.py`: database-backed API and shared React page serving.
-- `frontend/`: unified React + TypeScript product, shared drawers/tags/actions, Vite build, and self-hosted fonts.
-- `index.html`, `web/app.js`: compatibility redirects for cached older pages.
+**Production gaps:** authentication/multi-user ownership, durable ingestion workers,
+delivery webhooks/bounce handling, and deployment monitoring. Blocked descriptions,
+unknown technologies, and unrecognized locations remain incomplete. Real inbox
+rendering/delivery, installed cron execution, and broader device/screen-reader
+coverage require deployment verification. No LLM/embedding/OCR services, SMS,
+application submission automation, or additional scheduler infrastructure are used.

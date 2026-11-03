@@ -1,3 +1,4 @@
+// Fetch Recommended, Saved, Applied, and Dismissed collections in server order.
 import type { CandidateJob, RankedRecommendation } from '../types/jobs';
 import { requestJson } from './http';
 

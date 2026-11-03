@@ -1,3 +1,4 @@
+// Describe job, ranking, source, ingestion, and candidate-interaction API contracts.
 export interface CanonicalJob {
   id: number;
   company: string;

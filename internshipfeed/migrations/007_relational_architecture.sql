@@ -1,4 +1,4 @@
--- Configured upstream datasets; parser bindings use the stable key.
+-- Create relational source lineage, canonical storage, candidate profiles, and interaction history.
 CREATE TABLE job_sources (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     key TEXT NOT NULL UNIQUE,

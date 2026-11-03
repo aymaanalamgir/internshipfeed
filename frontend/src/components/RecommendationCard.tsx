@@ -1,3 +1,4 @@
+// Present a scored job with technical tags, workflow dates, explanations, and actions.
 import type { AppliedAction, DismissAction, CandidateJob, InteractionState, InteractionType, JobView, RankingSignals, Recommendation, SaveAction } from '../types/jobs';
 import { JobActions } from './JobActions';
 import { SkillTag } from './SkillTag';

@@ -1,3 +1,4 @@
+// Load and render scored job collections with shared workflow state and retry handling.
 import { useEffect, useState } from 'react';
 import { getAppliedJobs, getDismissedJobs, getRecommendations, getSavedJobs } from '../api/recommendations';
 import { RecommendationCard } from '../components/RecommendationCard';

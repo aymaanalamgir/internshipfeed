@@ -1,3 +1,4 @@
+// Describe saved profiles, editable drafts, resume metadata, and skill suggestions.
 export interface ProfileValues {
   target_roles: string[];
   skills: string[];

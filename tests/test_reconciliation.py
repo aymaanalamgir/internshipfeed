@@ -1,3 +1,4 @@
+"""Verify the canonical job contract and conservative application-URL normalization."""
 import unittest
 from pydantic import ValidationError
 from internshipfeed.models import CanonicalJob

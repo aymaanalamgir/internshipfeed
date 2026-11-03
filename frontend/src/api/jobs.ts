@@ -1,3 +1,4 @@
+// Fetch job details, source configuration, and ingestion progress; start listing updates.
 import { requestJson } from './http';
 import type { JobDetails, JobSource, SyncRun } from '../types/jobs';
 

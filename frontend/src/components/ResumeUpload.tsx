@@ -1,3 +1,4 @@
+// Validate PDF uploads and display the latest successful resume metadata.
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { ResumeMetadata } from '../types/profile';

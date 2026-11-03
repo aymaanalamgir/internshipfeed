@@ -1,3 +1,4 @@
+-- Create the original notification ledger with candidate/job/channel uniqueness.
 CREATE TABLE job_notifications (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     candidate_profile_id BIGINT NOT NULL REFERENCES candidate_profiles(id) ON DELETE CASCADE,

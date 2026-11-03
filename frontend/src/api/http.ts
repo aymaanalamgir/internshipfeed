@@ -1,3 +1,4 @@
+// Provide typed JSON requests and consistent API error handling.
 export class ApiError extends Error {
   readonly status: number;
   readonly detail: string | undefined;

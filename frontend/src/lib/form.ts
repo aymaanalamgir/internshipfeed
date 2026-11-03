@@ -1,3 +1,4 @@
+// Build complete profile payloads and validate year values and PDF selections.
 import type { CandidateProfile, PendingTags, ProfileDraft, ProfileValues, TagField } from '../types/profile';
 
 export const TAG_FIELDS: TagField[] = ['target_roles', 'skills', 'preferred_locations'];

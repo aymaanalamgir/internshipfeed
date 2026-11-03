@@ -1,3 +1,4 @@
+// Verify score presentation and recommendation API ordering contracts.
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 import { createElement } from 'react';

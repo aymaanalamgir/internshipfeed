@@ -1,3 +1,4 @@
+// Offer alias-filtered resume skills as optional additions to the profile draft.
 import type { ResumeSkillSuggestions } from '../types/profile';
 import { availableSkills } from '../lib/profile-options';
 import { SkillTag } from './SkillTag';

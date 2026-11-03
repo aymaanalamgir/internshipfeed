@@ -1,3 +1,4 @@
+// Load shared fonts and styles, then mount the React application.
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@fontsource/ibm-plex-sans/latin-400.css';

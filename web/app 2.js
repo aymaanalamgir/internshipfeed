@@ -1,3 +1,4 @@
+// Legacy vanilla job-directory client retained for reference.
 const search = document.querySelector('#search');
 const status = document.querySelector('#status');
 const sourceFilter = document.querySelector('#source');

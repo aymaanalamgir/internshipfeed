@@ -1,3 +1,4 @@
+// Compose the current job view, shared action state, and profile/job drawers.
 import { useEffect, useState } from 'react';
 import { TopNav } from './components/TopNav';
 import { ProfileDrawer } from './components/ProfileDrawer';

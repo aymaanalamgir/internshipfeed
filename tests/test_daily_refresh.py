@@ -1,3 +1,4 @@
+"""Verify email rendering, the mocked Resend boundary, and daily-command configuration."""
 import io
 import os
 import unittest

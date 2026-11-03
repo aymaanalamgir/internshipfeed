@@ -1,3 +1,4 @@
+// Verify profile payload construction, tag editing, and year/PDF validation.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { addTag, buildProfilePayload, emptyPending, graduationYearError, removeTag, toDraft, validatePdf } from './form';

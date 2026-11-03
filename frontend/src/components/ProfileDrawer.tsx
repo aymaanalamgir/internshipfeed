@@ -1,3 +1,4 @@
+// Load the profile and latest resume suggestions while preserving the underlying view.
 import { useEffect, useState } from 'react';
 import { getSkillSuggestions } from '../api/resumes';
 import { getProfile } from '../api/profile';

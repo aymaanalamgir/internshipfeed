@@ -1,3 +1,4 @@
+// Render compact technical tags with optional accessible add or remove controls.
 import { Icon } from './Icon';
 export function SkillTag({ label, onRemove, onAdd, removeLabel, disabled }: {
   label: string; onRemove?: () => void; onAdd?: () => void; removeLabel?: string; disabled?: boolean;

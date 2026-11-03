@@ -1,3 +1,4 @@
+// Explain profile fit and optional behavioral ranking using server-provided evidence.
 import { useState } from 'react';
 import type { RankingSignals, Recommendation } from '../types/jobs';
 

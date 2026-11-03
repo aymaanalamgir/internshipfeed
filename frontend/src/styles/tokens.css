@@ -1,3 +1,4 @@
+/* Define the shared color palette, spacing, typography, and border-radius tokens. */
 :root {
   --bg: #f6f4ef;
   --surface: #fffefa;

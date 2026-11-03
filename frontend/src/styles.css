@@ -1,3 +1,4 @@
+/* Style the shared application layout, components, interaction states, and responsive views. */
 @import './styles/tokens.css';
 * { box-sizing: border-box; }
 :root { font-family: var(--font-body); color: var(--text); background: var(--bg); font-synthesis: none; }

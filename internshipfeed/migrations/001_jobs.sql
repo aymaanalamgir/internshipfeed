@@ -1,3 +1,4 @@
+-- Create the original job storage and ingestion-run tables.
 CREATE TABLE IF NOT EXISTS jobs (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source TEXT NOT NULL CHECK (length(trim(source)) > 0),

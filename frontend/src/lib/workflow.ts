@@ -1,3 +1,4 @@
+// Apply authoritative interaction snapshots and project collection visibility and safe links.
 import type { InteractionReceipt, InteractionState, InteractionStates, JobView, Recommendation } from '../types/jobs';
 
 export function emptyInteraction(jobId: number): InteractionState {

@@ -1,3 +1,4 @@
+// Verify confirmed state, reversible collection membership, and interaction API contracts.
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 import { recordInteraction } from '../api/interactions';

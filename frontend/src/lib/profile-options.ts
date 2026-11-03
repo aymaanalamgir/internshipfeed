@@ -1,3 +1,4 @@
+// Define bounded profile choices and alias-aware skill comparison helpers.
 export const GRADUATION_YEARS = [2026, 2027, 2028, 2029, 2030];
 export const INTERNSHIP_TERMS = GRADUATION_YEARS.flatMap(year => ['Winter', 'Summer', 'Fall'].map(season => `${season} ${year}`));
 

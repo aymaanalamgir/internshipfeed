@@ -1,3 +1,4 @@
+// Coordinate confirmed interaction snapshots, pending requests, errors, and announcements.
 import { useCallback, useRef, useState } from 'react';
 import { recordInteraction } from '../api/interactions';
 import { confirmInteraction } from '../lib/workflow';

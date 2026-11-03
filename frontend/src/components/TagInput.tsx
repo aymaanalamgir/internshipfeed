@@ -1,3 +1,4 @@
+// Edit open-ended tag lists with Enter-to-add and explicit removal.
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { addTag, removeTag } from '../lib/form';

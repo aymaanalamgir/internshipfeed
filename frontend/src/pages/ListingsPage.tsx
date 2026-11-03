@@ -1,3 +1,4 @@
+// Render the neutral job directory with filters, source updates, details, and actions.
 import { useEffect, useState } from 'react';
 import { getListings } from '../api/jobs';
 import { getInteractionStates } from '../api/interactions';
