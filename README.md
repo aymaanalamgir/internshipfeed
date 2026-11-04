@@ -16,9 +16,28 @@
 
 ## Architecture
 
-![InternshipFeed architecture: source ingestion, PostgreSQL, personalized ranking, résumé skills, and daily email](InternshipFeed_Architecture_Diagram.png)
+```mermaid
+flowchart TB
+    sources["GitHub sources<br/>Canadian Tech + Simplify"]
+    sources --> ingest["Python ingestion<br/>Fetch → parse → normalize<br/>Snapshots + deterministic enrichment"]
+    ingest --> reconcile["URL reconciliation<br/>Preserve source IDs; merge canonical jobs"]
+    reconcile --> db[("PostgreSQL · source of truth<br/>Source provenance + ingestion reports<br/>Canonical jobs + URL aliases + JSONB keywords<br/>Profiles + résumés + interactions<br/>Applications + notification ledger")]
 
-*Conceptual overview; implementation contracts are specified below.*
+    pdf["Résumé PDF"] --> skills["pdfplumber + skill suggestions<br/>User review → explicit profile Save"]
+    skills --> db
+
+    db --> rank["Shared recommendation engine<br/>Eligible jobs + profile + activity<br/>75% profile fit / 25% behavior"]
+    rank --> api["FastAPI<br/>Feeds, details, profile, interactions<br/>Application status + filtering"]
+    db -->|"Directory + saved / applied / dismissed"| api
+    api <-->|"REST"| ui["React + TypeScript / Vite<br/>Recommended · All listings · Applied<br/>Saved · Dismissed · Profile<br/>Apply confirmation + status tracking"]
+    api -->|"Reversible events + application updates"| db
+
+    cron["Host cron · daily_refresh"] --> ingest
+    cron --> digest["Batch’s new canonical IDs<br/>Eligible, ranked, unnotified<br/>Default: final score ≥ 60 / top 5"]
+    rank --> digest
+    digest --> email["Resend digest<br/>HTML + plain text"]
+    email -->|"Record after provider acceptance"| db
+```
 
 **Backend:** Python, FastAPI, Pydantic 2, psycopg 3, and PostgreSQL.
 **Frontend:** React, TypeScript, and Vite. The API, ingestion, and daily command
