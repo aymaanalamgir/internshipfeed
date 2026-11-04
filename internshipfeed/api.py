@@ -1,5 +1,6 @@
 """Database-backed API and the consolidated React product."""
 import logging
+import os
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -101,10 +102,17 @@ def latest_ingestion_run(conn=Depends(connection)):
 
 
 def local_mutation(request):
+    vercel = os.environ.get('VERCEL') == '1'
+    development = vercel and os.environ.get('VERCEL_ENV') == 'development'
+    if vercel and not development:
+        raise HTTPException(403, "Hosted writes are not configured. Use the local development app.")
     if request.client is None or request.client.host not in {"127.0.0.1", "::1", "testclient"}:
         raise HTTPException(403, "This action is only available on the local development app.")
     origin = request.headers.get("origin")
     expected = str(request.base_url).rstrip("/")
+    if development and request.headers.get('x-forwarded-host'):
+        scheme = request.headers.get('x-forwarded-proto', request.url.scheme)
+        expected = scheme + '://' + request.headers['x-forwarded-host']
     if origin and origin != expected:
         raise HTTPException(403, "Cross-origin actions are not allowed.")
 
@@ -316,5 +324,6 @@ def profile_page():
 
 
 # Serve only UI assets; snapshots, .env, and data exports are not public routes.
-app.mount("/web", StaticFiles(directory=db.ROOT / "web"), name="web")
-app.mount("/profile/assets", StaticFiles(directory=db.ROOT / "frontend" / "dist" / "assets", check_dir=False), name="profile-assets")
+if os.environ.get('VERCEL') != '1':
+    app.mount("/web", StaticFiles(directory=db.ROOT / "web"), name="web")
+    app.mount("/profile/assets", StaticFiles(directory=db.ROOT / "frontend" / "dist" / "assets", check_dir=False), name="profile-assets")

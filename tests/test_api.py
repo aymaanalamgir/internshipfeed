@@ -1,12 +1,14 @@
 """Verify API input validation, access guards, and sanitized storage-failure responses."""
+import os
 import unittest
 from unittest.mock import patch
 
 import psycopg
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from internshipfeed.api import app, connection
+from internshipfeed.api import app, connection, local_mutation
 from internshipfeed.models import CandidateProfileUpdate
 from pdf_fixtures import make_pdf
 
@@ -15,6 +17,42 @@ EMPTY_PROFILE = {
     "target_roles": [], "skills": [], "preferred_locations": [],
     "preferred_terms": [], "graduation_year": None,
 }
+
+
+class DeploymentMutationTests(unittest.TestCase):
+    def request(self, origin='https://feed.example'):
+        return Request({'type': 'http', 'method': 'POST', 'scheme': 'https', 'path': '/api/profile',
+                        'root_path': '', 'query_string': b'', 'server': ('feed.example', 443),
+                        'client': ('127.0.0.1', 9000),
+                        'headers': [(b'host', b'feed.example'), (b'origin', origin.encode())]})
+
+    def test_hosted_requests_cannot_bypass_local_guard_through_loopback_proxy(self):
+        for environment in ('production', 'preview', ''):
+            with patch.dict(os.environ, {'VERCEL': '1', 'VERCEL_ENV': environment}), self.assertRaises(HTTPException) as caught:
+                local_mutation(self.request())
+            self.assertEqual(caught.exception.status_code, 403)
+
+    def test_vercel_development_retains_local_same_origin_actions(self):
+        with patch.dict(os.environ, {'VERCEL': '1', 'VERCEL_ENV': 'development'}):
+            local_mutation(self.request())
+            with self.assertRaises(HTTPException) as caught:
+                local_mutation(self.request('https://other.example'))
+            self.assertEqual(caught.exception.status_code, 403)
+
+    def test_only_vercel_development_uses_forwarded_public_origin(self):
+        request = self.request()
+        request.scope['headers'] = [(b'host', b'127.0.0.1:9000'), (b'origin', b'https://feed.example'),
+                                    (b'x-forwarded-host', b'feed.example'), (b'x-forwarded-proto', b'https')]
+        with patch.dict(os.environ, {'VERCEL': '1', 'VERCEL_ENV': 'development'}):
+            local_mutation(request)
+            bad = self.request('https://other.example')
+            bad.scope['headers'].extend([(b'x-forwarded-host', b'feed.example'), (b'x-forwarded-proto', b'https')])
+            with self.assertRaises(HTTPException) as caught:
+                local_mutation(bad)
+            self.assertEqual(caught.exception.status_code, 403)
+        with patch.dict(os.environ, {'VERCEL': '0'}), self.assertRaises(HTTPException) as caught:
+            local_mutation(request)
+        self.assertEqual(caught.exception.status_code, 403)
 
 
 class ProfileValidationTests(unittest.TestCase):

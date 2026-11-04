@@ -4,7 +4,7 @@
 
 [Architecture](#architecture) · [Ingestion](#ingestion) · [Database](#database) ·
 [Ranking](#ranking) · [Frontend](#frontend) · [API](#api) ·
-[Daily email](#daily-email) · [Run locally](#run-locally) · [Verification](#verification)
+[Daily email](#daily-email) · [Run locally](#run-locally) · [Vercel](#vercel) · [Verification](#verification)
 
 ## Product requirements
 
@@ -426,6 +426,55 @@ python -m internshipfeed --source simplify --input snapshot.md --no-enrich
 `--input` without a source replays Canadian data; `--enrich-limit`, `--delay`, and
 `--refresh-descriptions` control enrichment. Ignored `data/` artifacts support
 inspection/replay; credentials, snapshots, and exports are not public UI assets.
+
+## Vercel
+
+[vercel.json](vercel.json) deploys two independently built services in one project:
+
+| Service | Root / entrypoint | Public routing |
+| --- | --- | --- |
+| `app` | `.` / `internshipfeed.api:app` (FastAPI) | `/api` and `/api/...`; original paths are preserved. |
+| `frontend` | `frontend` (Vite; `npm ci`, `npm run build`, `dist`) | All remaining paths and assets; service-scoped SPA rewrites cover the existing navigation routes. |
+
+The browser uses same-origin `/api/...` requests. Neither deployed service calls
+the other server-side, so **no internal bindings are required**. Do not put an
+internal URL into a `VITE_*` variable: bindings resolve only in runtime functions.
+The standalone Vite development proxy uses optional `BACKEND_URL` (default port
+8000); Vercel development and deployment use the shared routing table instead.
+
+With `VERCEL=1`, Vite builds root-relative assets and FastAPI skips local static
+mounts, keeping service builds independent. Ordinary local builds retain
+`/profile/assets` for FastAPI hosting. [.vercelignore](.vercelignore) excludes local
+credentials, environments, cached dependencies, generated builds, and runtime data.
+
+1. Create/import one Vercel project with repository root **`.`**; leave build
+   settings in the service configuration. Configure a reachable hosted PostgreSQL
+   `DATABASE_URL` for the intended environment; local Compose/socket URLs cannot
+   work on Vercel. Use a separate preview/demo database for this single-profile app.
+2. Initialize that database with `python -m internshipfeed.db` and populate it using
+   the existing ingestion command or external cron. API startup also applies pending
+   migrations. Keep credentials in environment settings, never deployment JSON.
+3. Use **Python 3.12** (pinned in `.python-version`) with a matching virtualenv for
+   Vercel's current Python runtime; an existing Python 3.9 local-app environment
+   cannot run the current Vercel dev runtime. Run `npx vercel@latest dev` from the
+   repository root. For local-only testing without
+   Vercel authentication, use `npx vercel@latest dev --local`. Check `/api/health`,
+   direct links such as `/saved`, and frontend assets on the displayed shared URL.
+4. After confirming service names/exposure, link/import the project and create a
+   preview deployment; promote it only after checking the hosted database and access.
+
+**Current scope:** the existing mutation guard remains local-only. Hosted profile
+saves, résumé uploads, interactions, application updates, and manual sync need an
+explicit authenticated-write design before they work remotely; this configuration
+does not remove that guard. Public API reads include the development profile and
+résumé metadata, so use demo data or restrict access through Deployment Protection.
+`vercel dev` validates the forwarded public origin while retaining the loopback
+client check; preview/production writes remain blocked even behind loopback proxies.
+Ingestion's daemon thread and the host cron are not migrated to serverless workers
+or Vercel Cron. Run ingestion/daily email externally against the hosted database;
+configure Resend settings on that worker. [Vercel Services](https://vercel.com/docs/services),
+[routing](https://vercel.com/docs/services/routing), and
+[bindings](https://vercel.com/docs/services/bindings) describe the platform contracts.
 
 ## Verification
 
