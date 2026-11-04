@@ -37,6 +37,13 @@ h1 { font-size: 25px; font-weight: 500; letter-spacing: -.6px; margin: 0; line-h
 .job-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 0; }
 .job-availability { color: var(--danger-muted); }
 .applied-date { font-size: 12px; color: var(--text-muted); margin: var(--space-2) 0 0; }
+.posted-date { font-size: 12px; color: var(--text-muted); margin: var(--space-2) 0 0; }
+.loading-state { display: flex; align-items: center; justify-content: center; gap: var(--space-3); min-height: 140px; color: var(--text-muted); font-size: 13px; }
+.spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spinner-turn 1s linear infinite; }
+.refresh-state { font-size: 12px; color: var(--text-muted); margin: 0 0 var(--space-4); }
+.skill-suggestions .loading-state, .resume-section .loading-state { min-height: 40px; justify-content: flex-start; }
+@keyframes spinner-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 .match-score { display: flex; flex-direction: column; flex-shrink: 0; text-align: right; font-size: 18px; font-weight: 500; line-height: 1.3; color: var(--accent); }
 .match-score small { font-size: 10px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
 .skill-tags { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
@@ -69,10 +76,8 @@ h1 { font-size: 25px; font-weight: 500; letter-spacing: -.6px; margin: 0; line-h
 .dismiss-action { margin-left: auto; }
 .action-error { margin-top: var(--space-3); }
 .collection-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-top: var(--space-6); font-size: 11px; color: var(--text-muted); }
-.empty-state, .load-error, .loading-profile { font-size: 13px; color: var(--text-muted); padding: var(--space-6) 0; }
+.empty-state, .load-error { font-size: 13px; color: var(--text-muted); padding: var(--space-6) 0; }
 .load-error p { margin-bottom: var(--space-3); }
-.skeleton-row { height: 144px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: var(--space-4); }
-.skeleton-field { height: 60px; background: var(--surface-muted); border-radius: var(--radius); margin-top: var(--space-4); }
 .filter-bar { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 .filter-bar label { min-width: 120px; flex: 1; }
 .filter-bar .search-control { flex: 2; min-width: 230px; }

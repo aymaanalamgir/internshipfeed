@@ -1,6 +1,7 @@
 // Present a scored job with technical tags, workflow dates, explanations, and actions.
 import type { ReactNode } from 'react';
 import type { AppliedAction, DismissAction, CandidateJob, CanonicalJob, InteractionState, InteractionType, JobView, RankingSignals, Recommendation, SaveAction } from '../types/jobs';
+import { PostedDate } from './PostedDate';
 import { JobActions } from './JobActions';
 import { SkillTag } from './SkillTag';
 import { MatchSummary } from './MatchSummary';
@@ -24,6 +25,7 @@ export function RecommendationCard({ view = 'recommended', recommendation, inter
       <h2 id={`job-title-${job.id}`}><button className="job-title" onClick={() => onOpenJob?.(job.id)}>{job.title}</button></h2>
       <p className="job-meta"><span>{job.location}</span>{recommendation.term && <><span aria-hidden="true">·</span><span>{recommendation.term}</span></>}
         {['closed', 'dead'].includes(job.status) && <span className="job-availability">{job.status === 'closed' ? 'Posting closed' : 'Link unavailable'}</span>}</p>
+      <PostedDate date={job.posted_at} />
       {view === 'applied' && applicationControl}
       {view === 'applied' && appliedAt && <p className="applied-date">Applied <time dateTime={appliedAt}>
         {new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(appliedAt))}</time></p>}

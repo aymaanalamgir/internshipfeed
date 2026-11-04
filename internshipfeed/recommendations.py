@@ -16,8 +16,7 @@ def rank_recommendations(profile: CandidateProfile, jobs: Iterable[JobDetails],
         results.append(RankedMatchResult(**match.model_dump(), profile_score=match.score,
                        behavior_score=preference.score, final_score=(3 * match.score + preference.score + 2) // 4,
                        behavior_reasons=preference.reasons))
-    # Profile fit resolves quantized ties, preserving cold-start ordering exactly.
-    results.sort(key=lambda result: (result.final_score, result.profile_score, result.job.posted_at is not None,
+    results.sort(key=lambda result: (result.final_score, result.job.posted_at is not None,
                                     result.job.posted_at.toordinal() if result.job.posted_at else 0,
                                     result.job.id), reverse=True)
     return results

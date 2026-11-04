@@ -1,5 +1,7 @@
 // Manage editable profile drafts and persist changes only on explicit Save.
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { invalidateJobs, queryKeys } from '../lib/queries';
 import type { FormEvent, ReactNode } from 'react';
 import type { CandidateProfile, TagField } from '../types/profile';
 import { updateProfile } from '../api/profile';
@@ -17,6 +19,7 @@ const FIELDS: { key: TagField; label: string; placeholder: string }[] = [
 ];
 
 export function ProfileForm({ profile, onSaved, children, suggestions }: { suggestions?: SuggestionState; profile: CandidateProfile; onSaved?: () => void; children?: ReactNode }) {
+  const client = useQueryClient();
   const [baseline, setBaseline] = useState(profile);
   const [draft, setDraft] = useState(() => toDraft(profile));
   const [pending, setPending] = useState(emptyPending);
@@ -39,6 +42,9 @@ export function ProfileForm({ profile, onSaved, children, suggestions }: { sugge
     try {
       // Include uncommitted input so clicking Save never drops a typed preference.
       const stored = await updateProfile(buildProfilePayload(draft, pending));
+      await client.cancelQueries({ queryKey: queryKeys.profile });
+      client.setQueryData(queryKeys.profile, stored);
+      void invalidateJobs(client);
       setBaseline(stored);
       setDraft(toDraft(stored));
       setPending(emptyPending());

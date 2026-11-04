@@ -22,7 +22,7 @@ test('home prioritizes Recommended and legacy paths retain compatible destinatio
   assert.equal(viewForPath('/dismissed/'), 'dismissed'); assert.equal(viewForPath('/saved'), 'saved'); assert.equal(viewForPath('/applied/'), 'applied');
 });
 test('navigation exposes five destinations and Profile as a dialog control', () => {
-  const html = renderToStaticMarkup(createElement(TopNav, { current: 'listings', profileOpen: false, onProfile() {} }));
+  const html = renderToStaticMarkup(createElement(TopNav, { current: 'listings', profileOpen: false, onProfile() {}, onNavigate() {} }));
   assert.match(html, /href="\/listings" aria-current="page"/);
   assert.match(html, /href="\/dismissed"/);
   const destinations = [...html.matchAll(/<a[^>]+href="(\/listings|\/applied|\/saved|\/dismissed|\/)"[^>]*>([^<]+)<\/a>/g)].map(match => match[2]);

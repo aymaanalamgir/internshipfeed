@@ -29,7 +29,8 @@ flowchart TB
     db --> rank["Shared recommendation engine<br/>Eligible jobs + profile + activity<br/>75% profile fit / 25% behavior"]
     rank --> api["FastAPI<br/>Feeds, details, profile, interactions<br/>Application status + filtering"]
     db -->|"Directory + saved / applied / dismissed"| api
-    api <-->|"REST"| ui["React + TypeScript / Vite<br/>Recommended · All listings · Applied<br/>Saved · Dismissed · Profile<br/>Apply confirmation + status tracking"]
+    api <-->|"REST"| cache["TanStack Query<br/>45 s fresh / 5 min cache retention"]
+    cache <--> ui["React + TypeScript / Vite<br/>Recommended · All listings · Applied<br/>Saved · Dismissed · Profile<br/>Apply confirmation + status tracking"]
     api -->|"Reversible events + application updates"| db
 
     cron["Host cron · daily_refresh"] --> ingest
@@ -71,6 +72,14 @@ Python `urllib` fetches source files; Markdown rules and `HTMLParser` parse them
 Both emit `SourceJobRecord` → `normalize()` → `JobListing`, preserving source
 identity, raw cells, job fields, term/status, snapshot, and enrichment results.
 Relative ages such as `2d` stay raw; missing exact dates remain null.
+
+**Posting dates:** Canadian Tech's full dates and any full Simplify dates normalize
+to nullable `DATE` values (API: `YYYY-MM-DD`), retaining `raw_posted_at` on source
+postings. Relative ages, yearless values, and malformed dates stay undated; no fetch
+time or inferred year supplies a fake date. Canonical `posted_at` is the earliest
+non-null linked upstream date and updates when earlier evidence arrives.
+`first_seen_at` remains discovery metadata; daily email uses exact batch discovery
+IDs independently of upstream dates. Existing posting-date indexes cover this field.
 
 ### Reconciliation and descriptions
 
@@ -183,7 +192,7 @@ profile_score  = role + skills + location + term
 final_score    = round_half_up(0.75 × profile_score + 0.25 × behavior_score)
 ```
 
-Neutral behavior is 50. Order is final score, profile score, exact posting date
+Neutral behavior is 50. Order is final score, exact posting date
 (null last), then canonical ID, descending. `score` remains profile fit; Recommended
 adds `profile_score`, `behavior_score`, `final_score`, and up to two positive behavior
 reasons. **API `min_score` filters profile fit; daily-email minimum filters final score.**
@@ -195,9 +204,10 @@ résumé text, embeddings, and LLMs are not scoring inputs.
 
 ### Stack and design
 
-**React 19 + TypeScript + Vite 7**, plain CSS, shared SVG icons, self-hosted IBM
+**React 19 + TypeScript + Vite 7 + TanStack Query 5**, plain CSS, shared SVG icons, self-hosted IBM
 Plex Sans, and monospace skill tags. Node.js **22.12+** builds the app; FastAPI
-serves its entry and `/profile/assets`. No router/state/UI framework is added.
+serves its entry and `/profile/assets`. Ordinary tab clicks use history navigation;
+direct links, modified clicks, and browser Back/Forward retain their normal behavior.
 
 | Design token | Value / use |
 | --- | --- |
@@ -213,6 +223,26 @@ Apply is primary; other actions are secondary. Tags wrap and narrow navigation
 scrolls. Drawers support focus trapping/restoration, Escape/backdrop close, inert
 backgrounds, and mobile widths. Loading/retry states, accessible labels, keyboard
 focus, and reduced-motion support are shared requirements.
+
+### Fetching and cache
+
+One [query client](frontend/src/lib/queries.ts) keeps data fresh for **45 seconds**,
+retains inactive queries for **5 minutes**, retries once, and disables window-focus
+refetching. Stable keys separate development-candidate collections, Applied status
+filters, directory data, job IDs, profile, résumé metadata/suggestions, and sources.
+Directory filters remain local. Cache is in memory for the current page session.
+
+A shared subtle spinner appears only without loaded data. Cached lists/forms/details
+remain visible during background refresh and failures, with secondary refresh/retry
+feedback. Tab revisits reuse fresh data immediately; stale data revalidates in place.
+Confirmed interactions (including clicks), application updates, profile saves, and
+completed ingestion invalidate job queries across tabs and details. Event cursors
+prevent older cached snapshots from reversing confirmed state. Profile saves and
+résumé uploads also update their respective caches; unsaved drafts remain local.
+
+Every job view and details display known upstream dates as **Posted Nov 3, 2026**,
+using UTC calendar formatting and an exact `<time>` value. Unknown dates are omitted
+on cards and shown as unavailable in details. Discovery timestamps never substitute.
 
 ### Tabs and interaction contract
 
@@ -408,11 +438,14 @@ python -m pip install -e '.[browser]'
 python -m playwright install chromium
 python scripts/check_recommendations_ui.py --browser-executable /path/to/chromium
 python scripts/check_apply_ui.py --browser-executable /path/to/chromium
+python scripts/check_cache_ui.py  # Bundled Chromium; isolated cache/loading/date checks
 python scripts/check_daily_email.py --browser-executable /path/to/chromium
 ```
 
 Checks cover parsing/deduplication, migrations, merges, ranking, reversible state,
-PDF suggestions, application progression/backfill/indexes, UI/keyboard/mobile behavior, failure isolation, and email dry runs.
+PDF suggestions, application progression/backfill/indexes, cached navigation/loading,
+posting-date reconciliation and discovery independence, UI/keyboard/mobile behavior,
+failure isolation, and email dry runs.
 Browser runners clean up temporary schemas/API processes; providers are mocked.
 Prefer the isolated runner: `check_profile_ui.py` alone appends fixture résumés.
 Unit-only command: `python -m unittest discover -s tests -v`; DB tests require

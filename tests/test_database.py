@@ -94,6 +94,52 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaises(psycopg.errors.UniqueViolation):
             self.conn.execute("INSERT INTO source_postings (source_id, external_id, company, title, location, status, snapshot_id, source_line) VALUES (%s, %s, 'x', 'y', 'z', 'open', %s, 1)", (self.job.source_id, self.job.external_id, int(self.job.snapshot_id)))
 
+    def test_upstream_date_persistence_reconciliation_and_api_do_not_change_discovery(self):
+        from internshipfeed.sources import SIMPLIFY
+        self.save(self.job.model_copy(update={'posted_at': date(2026, 11, 3)}))
+        canonical = db.list_jobs(self.conn)[0]
+        before = self.conn.execute('SELECT first_seen_at FROM canonical_jobs WHERE id=%s', (canonical.id,)).fetchone()['first_seen_at']
+        second = self.job.model_copy(update={'source': SIMPLIFY.url, 'external_id': 'date-peer',
+                                            'posted_at': date(2026, 11, 1), 'raw_posted_at': 'Nov 01, 2026'})
+        self.save(second)
+        source = db.get_source_job(self.conn, SIMPLIFY.url, 'date-peer')
+        self.assertEqual(source.posted_at, date(2026, 11, 1))
+        self.assertEqual(source.raw_posted_at, 'Nov 01, 2026')
+        self.assertEqual(source.canonical_job_id, canonical.id)
+        self.assertEqual(db.get_job(self.conn, canonical.id).posted_at, date(2026, 11, 1))
+        self.assertEqual(self.conn.execute('SELECT first_seen_at FROM canonical_jobs WHERE id=%s', (canonical.id,)).fetchone()['first_seen_at'], before)
+        self.save(second.model_copy(update={'posted_at': None, 'raw_posted_at': '2d'}))
+        self.assertEqual(db.get_job(self.conn, canonical.id).posted_at, date(2026, 11, 3))
+        self.save(second)
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for path in ('/api/feed', '/api/recommendations'):
+                self.assertEqual(client.get(path).json()[0]['job']['posted_at'], '2026-11-01')
+            self.assertEqual(client.get('/api/jobs/%s/details' % canonical.id).json()['job']['posted_at'], '2026-11-01')
+
+    def test_new_job_email_uses_discovery_ids_independent_of_upstream_posting_date(self):
+        from internshipfeed.daily_refresh import DailySettings, run_daily_refresh
+        from internshipfeed.notifications import EmailReceipt
+        header = '| Company | Role | Location | Apply | Date Posted |\n|---|---|---|---|---|\n'
+        old_row = '| Existing | Software Intern | Toronto | [Apply](https://example.com/jobs/existing) | Nov 03, 2026 |\n'
+        new_row = '| Discovered | Software Intern | Toronto | [Apply](https://example.com/jobs/discovered) | Jan 01, 2020 |\n'
+        old = normalize(CANADIAN.parse(header + old_row)[0], CANADIAN.url, 'a')
+        self.save(old)
+        old_id = db.get_source_job(self.conn, old.source, old.external_id).canonical_job_id
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'dates.md'
+            path.write_text(header + old_row + new_row)
+            with patch('internshipfeed.db.connect', side_effect=self.connect), \
+                 patch('internshipfeed.daily_refresh.send_email', return_value=EmailReceipt('dates-fixture')):
+                result = run_daily_refresh(DailySettings(0), ingestion_options=self.daily_options(directory, path))
+        batch = db.get_batch(self.conn, result['batch_id'])
+        discovered = next(job for job in db.list_jobs(self.conn) if job.company == 'Discovered')
+        self.assertEqual(discovered.posted_at, date(2020, 1, 1))
+        self.assertNotIn(old_id, batch['new_canonical_job_ids'])
+        self.assertIn(discovered.id, batch['new_canonical_job_ids'])
+        notified = {row['canonical_job_id'] for row in self.conn.execute('SELECT canonical_job_id FROM job_notifications')}
+        self.assertIn(discovered.id, notified)
+        self.assertNotIn(old_id, notified)
+
     def test_closed_update_preserves_description_url_and_first_seen(self):
         self.job.description = "Experience with Python and React."
         self.job.keywords = JobKeywords(languages=["Python"], frameworks=["React"], requirements=["Experience with Python and React."])

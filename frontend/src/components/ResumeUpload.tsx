@@ -1,9 +1,12 @@
 // Validate PDF uploads and display the latest successful resume metadata.
 import { useEffect, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { queryKeys, resumeQuery } from '../lib/queries';
+import { LoadingState, RefreshState } from './LoadingState';
 import type { ChangeEvent } from 'react';
 import type { ResumeMetadata } from '../types/profile';
 import { ApiError } from '../api/http';
-import { getLatestResume, uploadResume } from '../api/resumes';
+import { uploadResume } from '../api/resumes';
 import { validatePdf } from '../lib/form';
 
 function uploadError(error: unknown): string {
@@ -21,21 +24,13 @@ export function ResumeUpload({ onResumeChange }: { onResumeChange?: (resume: Res
   const callback = useRef(onResumeChange);
   callback.current = onResumeChange;
   const input = useRef<HTMLInputElement>(null);
-  const [uploaded, setUploaded] = useState<ResumeMetadata | null>(null);
+  const client = useQueryClient();
+  const query = useQuery(resumeQuery());
+  const uploaded = query.data;
   const [selectedName, setSelectedName] = useState('');
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
-  const [loadError, setLoadError] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  const uploadVersion = useRef(0);
-  useEffect(() => {
-    const controller = new AbortController();
-    const version = uploadVersion.current;
-    setLoadError(false);
-    getLatestResume(controller.signal).then(value => { if (!controller.signal.aborted && version === uploadVersion.current) { setUploaded(value); callback.current?.(value); } })
-      .catch(() => { if (!controller.signal.aborted && version === uploadVersion.current) setLoadError(true); });
-    return () => controller.abort();
-  }, [attempt]);
+  useEffect(() => { if (query.data !== undefined) callback.current?.(query.data); }, [query.data]);
 
   async function selected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -45,16 +40,14 @@ export function ResumeUpload({ onResumeChange }: { onResumeChange?: (resume: Res
     setSelectedName(file.name);
     const validation = validatePdf(file);
     if (validation) { setError(validation); return; }
-    uploadVersion.current += 1;
     setUploading(true);
     try {
+      await client.cancelQueries({ queryKey: queryKeys.resume });
       const stored = await uploadResume(file);
       const metadata = { id: stored.id, candidate_profile_id: stored.candidate_profile_id, filename: stored.filename, uploaded_at: stored.uploaded_at };
-      setUploaded(metadata);
-      callback.current?.(metadata);
-      setLoadError(false);
+      client.setQueryData(queryKeys.resume, metadata);
     }
-    catch (failure) { setError(uploadError(failure)); }
+    catch (failure) { setError(uploadError(failure)); void client.invalidateQueries({ queryKey: queryKeys.resume }); }
     finally { setUploading(false); }
   }
 
@@ -79,7 +72,9 @@ export function ResumeUpload({ onResumeChange }: { onResumeChange?: (resume: Res
           {uploading ? 'Uploading…' : uploaded ? 'Replace PDF' : 'Upload PDF'}
         </button>
       </div>
-      {loadError && <p className="field-error">Could not load résumé. <button type="button" className="text-button" onClick={() => setAttempt(value => value + 1)}>Try again</button></p>}
+      {query.isPending && <LoadingState label="Loading résumé…" />}
+      {query.data !== undefined && <RefreshState fetching={query.isFetching} error={query.isError} onRetry={() => void query.refetch()} />}
+      {query.isError && query.data === undefined && <p className="field-error">Could not load résumé. <button type="button" className="text-button" onClick={() => void query.refetch()}>Try again</button></p>}
     </section>
   );
 }

@@ -1,5 +1,6 @@
 """Verify registered source parsers produce consistent records, identities, and terms."""
 import unittest
+from datetime import date
 from pathlib import Path
 
 from internshipfeed.models import JobListing
@@ -10,6 +11,33 @@ FIXTURES = Path(__file__).parent / 'fixtures'
 
 
 class SourceTests(unittest.TestCase):
+    def test_exact_dates_from_both_parsers_and_raw_metadata(self):
+        canadian = CANADIAN.parse((FIXTURES / 'listings.md').read_text())[0]
+        self.assertEqual(normalize(canadian, CANADIAN.url, 'a').posted_at, date(2026, 10, 2))
+        for raw in ('Nov 03, 2026', 'November 03, 2026', '2026-11-03'):
+            markup = (FIXTURES / 'simplify.md').read_text().replace('<td>2d</td>', '<td>' + raw + '</td>')
+            record = SIMPLIFY.parse(markup)[0]
+            job = normalize(record, SIMPLIFY.url, 'a')
+            self.assertEqual(record.date_kind, 'exact')
+            self.assertEqual(record.posted_at_raw, raw)
+            self.assertEqual(job.raw_posted_at, raw)
+            self.assertEqual(job.posted_at, date(2026, 11, 3))
+
+    def test_missing_yearless_relative_and_malformed_dates_remain_unknown(self):
+        for source, filename, old, new in (
+            (CANADIAN, 'listings.md', 'Oct 2, 2026', ''),
+            (CANADIAN, 'listings.md', 'Oct 2, 2026', 'Feb 30, 2026'),
+            (CANADIAN, 'listings.md', 'Oct 2, 2026', 'Nov 03'),
+            (SIMPLIFY, 'simplify.md', '<td>2d</td>', '<td>Feb 30, 2026</td>'),
+            (SIMPLIFY, 'simplify.md', '<td>2d</td>', '<td></td>'),
+        ):
+            markup = (FIXTURES / filename).read_text().replace(old, new)
+            job = normalize(source.parse(markup)[0], source.url, 'a')
+            self.assertIsNone(job.posted_at)
+        record = SIMPLIFY.parse((FIXTURES / 'simplify.md').read_text())[0]
+        self.assertEqual(record.date_kind, 'relative')
+        self.assertEqual(normalize(record, SIMPLIFY.url, 'a').raw_posted_at, '2d')
+
     def test_both_sources_share_one_record_and_job_contract(self):
         for source, file in ((CANADIAN, 'listings.md'), (SIMPLIFY, 'simplify.md')):
             records = source.parse((FIXTURES / file).read_text())

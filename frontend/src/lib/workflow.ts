@@ -10,6 +10,12 @@ export function indexInteractions(states: InteractionState[]): InteractionStates
   return Object.fromEntries(states.map(state => [state.job_id, state]));
 }
 
+export function mergeInteractionStates(current: InteractionStates, incoming: InteractionState[]): InteractionStates {
+  const next = { ...current };
+  for (const state of incoming) if (!next[state.job_id] || state.last_event_id >= next[state.job_id].last_event_id) next[state.job_id] = state;
+  return next;
+}
+
 export function confirmInteraction(states: InteractionStates, requestedId: number, receipt: InteractionReceipt): InteractionStates {
   const incoming = receipt.interaction_state;
   // Install SQL-derived snapshots, never replay event types in the browser. The

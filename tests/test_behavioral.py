@@ -169,3 +169,15 @@ class RecommendationCompositionTests(unittest.TestCase):
         actual = rank_recommendations(profile(), jobs, learned)
         self.assertEqual(actual, rank_recommendations(profile(), reversed(jobs), learned))
         self.assertEqual([item.job.id for item in actual], [2, 1])
+
+    def test_final_score_ties_use_upstream_date_before_quantized_profile_fit(self):
+        candidate = profile(target_roles=['Backend Engineering'], skills=['Python'])
+        older = details(id=1, posted_at=date(2026, 11, 1),
+                        keywords=JobKeywords(languages=['Python'] + ['Other%s' % n for n in range(29)]))
+        newer = details(id=2, posted_at=date(2026, 11, 3))
+        undated = older.model_copy(update={'job': older.job.model_copy(update={'id': 3, 'posted_at': None})})
+        stronger = details(id=4, posted_at=date(2020, 1, 1), keywords=JobKeywords(languages=['Python']))
+        matches = rank_recommendations(candidate, [older, undated, newer, stronger], BehaviorProfile())
+        self.assertEqual([match.job.id for match in matches], [4, 2, 1, 3])
+        self.assertEqual(matches[1].final_score, matches[2].final_score)
+        self.assertGreater(matches[2].profile_score, matches[1].profile_score)

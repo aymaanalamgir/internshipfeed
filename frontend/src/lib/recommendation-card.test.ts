@@ -26,6 +26,15 @@ function render(view: JobView) {
 test('Recommended displays the server final score as its primary score', () => {
   assert.match(render('recommended'), /class="match-score">84<small>/);
 });
+test('all scored collections display the same genuine upstream posting date', () => {
+  for (const view of ['recommended', 'saved', 'applied', 'dismissed'] as const) {
+    const html = renderToStaticMarkup(createElement(RecommendationCard, {
+      view, recommendation: { ...ranked, job: { ...ranked.job, posted_at: '2026-11-03' } }, interactionState: ranked.interaction_state,
+      onSave() {}, onDismiss() {}, onApply() {}, onApplied() {},
+    }));
+    assert.match(html, /Posted <time dateTime="2026-11-03"/);
+  }
+});
 test('Saved and Applied retain the independent profile fit presentation', () => {
   for (const view of ['saved', 'applied'] as const) assert.match(render(view), /class="match-score">80<small>/);
 });
