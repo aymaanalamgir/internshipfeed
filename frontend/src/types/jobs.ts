@@ -49,7 +49,21 @@ export interface InteractionReceipt extends InteractionEvent {
   interaction_state: InteractionState;
 }
 
+export type ApplicationStatus = 'applied' | 'interview' | 'rejected' | 'ghosted' | 'offered';
+
+export interface JobApplication {
+  id: number;
+  candidate_profile_id: number;
+  canonical_job_id: number;
+  status: ApplicationStatus;
+  applied_at: string;
+  status_updated_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CandidateJob extends Recommendation {
+  application?: JobApplication;
   interaction_state: InteractionState;
   term: string | null;
   keywords: JobKeywords;

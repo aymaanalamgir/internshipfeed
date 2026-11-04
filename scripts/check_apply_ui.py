@@ -100,6 +100,8 @@ try:
                     else:
                         open_tab()
                 page.goto(base + '/')
+                assert page.locator('.nav-links a').all_text_contents() == ['Recommended', 'All listings', 'Applied', 'Saved', 'Dismissed']
+                expect(page.locator('.application-status')).to_have_count(0)
                 expect(card(first)).to_be_visible()
                 expect(card(first).get_by_role('button', name='Mark job as applied', exact=True)).to_have_count(0)
                 expect(card(saved)).to_have_count(0)
@@ -151,6 +153,7 @@ try:
                 expect(card(first)).to_have_count(0)
                 page.get_by_role('link', name='Saved', exact=True).click()
                 expect(card(first)).to_be_visible()
+                expect(page.locator('.application-status')).to_have_count(0)
                 open_apply(saved)
                 expect(modal).to_be_visible()
                 before = events(saved)
@@ -180,6 +183,52 @@ try:
                 open_apply(first, label='Open application')
                 expect(modal).to_have_count(0)
                 assert events(first) == before + ['click']
+                original_application = next(row['application'] for row in page.request.get(base + '/api/applied').json() if row['job']['id'] == first)
+                status_control = card(first).locator('#application-status-' + str(first))
+                expect(status_control).to_have_value('applied')
+                status_path = '**/api/jobs/%s/application' % first
+                page.route(status_path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
+                status_control.select_option('interview')
+                expect(card(first).get_by_role('alert')).to_have_text('Could not update status. Please try again.')
+                expect(status_control).to_have_value('applied')
+                page.unroute(status_path)
+                history_before_progress = events(first)
+                navigation_before_progress = len(navigations)
+                for status in ('interview', 'rejected', 'ghosted', 'offered'):
+                    with page.expect_response(lambda response: response.url.endswith('/application') and response.request.method == 'PATCH') as changed:
+                        status_control.select_option(status)
+                    assert changed.value.status == 200
+                    expect(status_control).to_have_value(status)
+                    current = changed.value.json()
+                    assert current['applied_at'] == original_application['applied_at']
+                    assert events(first) == history_before_progress
+                    expect(card(first)).to_be_visible()
+                    page.reload()
+                    expect(status_control).to_have_value(status)
+                    navigation_before_progress += 1
+                assert len(navigations) == navigation_before_progress
+                assert page.locator('.recommendation-card').first.get_attribute('data-job-id') == str(first)
+                page.locator('#application-filter').select_option('offered')
+                expect(page.locator('.recommendation-card')).to_have_count(1)
+                expect(status_control).to_have_value('offered')
+                status_control.select_option('rejected')
+                expect(card(first)).to_have_count(0)
+                expect(page.get_by_text('No applications with this status.', exact=True)).to_be_visible()
+                page.locator('#application-filter').select_option('rejected')
+                expect(status_control).to_have_value('rejected')
+                page.locator('#application-filter').select_option('')
+                expect(card(applied)).to_be_visible()
+                card(applied).locator('#application-status-' + str(applied)).select_option('interview')
+                expect(card(applied).locator('#application-status-' + str(applied))).to_have_value('interview')
+                assert page.locator('.recommendation-card').first.get_attribute('data-job-id') == str(applied)
+                page.screenshot(path=str(screenshots / 'application-tracker-desktop.png'), full_page=True)
+                page.set_viewport_size({'width': 390, 'height': 844})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.screenshot(path=str(screenshots / 'application-tracker-mobile.png'), full_page=True)
+                page.set_viewport_size({'width': 1280, 'height': 1000})
+                page.get_by_role('link', name='Saved', exact=True).click()
+                expect(card(first)).to_be_visible()
+                expect(page.locator('.application-status')).to_have_count(0)
                 page.get_by_role('link', name='Recommended', exact=True).click()
                 open_apply(failure)
                 failure_path = '**/api/jobs/%s/interactions' % failure
@@ -228,9 +277,18 @@ try:
                 page.get_by_role('link', name='Applied', exact=True).click()
                 expect(card(manual)).to_be_visible()
                 assert state(manual)['applied']
+                page.get_by_role('link', name='Recommended', exact=True).click()
+                expect(card(missing)).to_be_visible()
+                card(missing).get_by_role('button', name='Dismiss job', exact=True).click()
+                expect(card(missing)).to_have_count(0)
+                page.get_by_role('link', name='Dismissed', exact=True).click()
+                expect(card(missing)).to_be_visible()
+                expect(page.locator('.application-status')).to_have_count(0)
+                card(missing).get_by_role('button', name='Restore job', exact=True).click()
+                expect(card(missing)).to_have_count(0)
                 assert conn.execute('SELECT * FROM canonical_jobs ORDER BY id').fetchall() == before_jobs
                 assert not errors, errors
-                print('Post-Apply browser checks passed: native external navigation/click, all confirmation outcomes and close paths, save/applied persistence and errors, saved deduplication, backend eligibility, manual Applied, missing links, nested focus, late click receipts, desktop/mobile, and no mutation reloads.')
+                print('Post-Apply and application tracker browser checks passed: status editing/filtering/reordering/retention, submission date preservation, navigation order, Dismissed/Restore, and native external navigation/click, all confirmation outcomes and close paths, save/applied persistence and errors, saved deduplication, backend eligibility, manual Applied, missing links, nested focus, late click receipts, desktop/mobile, and no mutation reloads.')
             finally:
                 browser.close()
 finally:

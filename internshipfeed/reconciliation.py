@@ -129,6 +129,8 @@ def reconcile(conn, payload, previous=None):
         conn.execute('UPDATE canonical_job_sources SET canonical_job_id = %s WHERE canonical_job_id = %s', (canonical_id, other_id))
         conn.execute('UPDATE canonical_job_urls SET canonical_job_id = %s WHERE canonical_job_id = %s', (canonical_id, other_id))
         conn.execute('UPDATE canonical_job_identities SET merged_into_id = %s WHERE id = %s', (canonical_id, other_id))
+        from .applications import merge_application_records
+        merge_application_records(conn, canonical_id, other_id)
     for url in keys:
         digest = hashlib.sha256(url.encode()).hexdigest()
         conn.execute('INSERT INTO canonical_job_urls (url_key, canonical_url, canonical_job_id) VALUES (%s, %s, %s) '

@@ -5,6 +5,7 @@ import { applicationUrl, confirmInteraction } from '../lib/workflow';
 import type { CanonicalJob, InteractionState, InteractionStates, InteractionType } from '../types/jobs';
 
 export function useJobActions() {
+  const [applicationRevision, setApplicationRevision] = useState(0);
   const [application, setApplication] = useState<CanonicalJob | null>(null);
   const [states, setStates] = useState<InteractionStates>({});
   const [pending, setPending] = useState<Record<number, InteractionType | undefined>>({});
@@ -27,6 +28,7 @@ export function useJobActions() {
       setStates(current => confirmInteraction(current, id, receipt));
       const messages = { save: 'Job saved.', unsave: 'Job removed from Saved.', dismiss: 'Job dismissed.', undismiss: 'Job restored.', applied: 'Marked as applied.', unapplied: 'Marked as not applied.' };
       setAnnouncement(messages[type]);
+      if (type === 'applied' || type === 'unapplied') setApplicationRevision(value => value + 1);
       return true;
     } catch {
       const actions = { save: 'save this job', unsave: 'unsave this job', dismiss: 'dismiss this job', undismiss: 'restore this job', applied: 'mark this job as applied', unapplied: 'unmark this job as applied' };
@@ -49,6 +51,6 @@ export function useJobActions() {
     void recordInteraction(id, 'click').then(receipt => setStates(current => confirmInteraction(current, id, receipt)))
       .catch(() => setErrors(current => ({ ...current, [id]: 'Click could not be recorded. The application link is still available.' })));
   }
-  return { application, closeApplication, states, install, pending, errors, announcement, act, apply };
+  return { applicationRevision, application, closeApplication, states, install, pending, errors, announcement, act, apply };
 }
 export type JobWorkflow = ReturnType<typeof useJobActions>;

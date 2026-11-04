@@ -25,6 +25,8 @@ test('navigation exposes five destinations and Profile as a dialog control', () 
   const html = renderToStaticMarkup(createElement(TopNav, { current: 'listings', profileOpen: false, onProfile() {} }));
   assert.match(html, /href="\/listings" aria-current="page"/);
   assert.match(html, /href="\/dismissed"/);
+  const destinations = [...html.matchAll(/<a[^>]+href="(\/listings|\/applied|\/saved|\/dismissed|\/)"[^>]*>([^<]+)<\/a>/g)].map(match => match[2]);
+  assert.deepEqual(destinations, ['Recommended', 'All listings', 'Applied', 'Saved', 'Dismissed']);
   assert.match(html, /aria-haspopup="dialog"/);
   assert.doesNotMatch(html, /href="\/profile"/);
 });

@@ -1455,7 +1455,186 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual([row['job']['id'] for row in client.get('/api/applied').json()], [c])
         self.assertEqual(len(db.list_jobs(self.conn)), 3)  # Product filtering never deletes canonical jobs.
 
-    def test_applied_order_uses_latest_applied_event_not_later_clicks(self):
+    def test_application_lifecycle_preserves_submission_and_repeated_apply_progress(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            event = client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'applied'})
+            self.assertEqual(event.status_code, 201)
+            initial = client.get('/api/applied').json()[0]['application']
+            self.assertEqual(initial['status'], 'applied')
+            self.assertEqual(initial['applied_at'], event.json()['created_at'])
+            previous = initial
+            history_count = self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n']
+            for status in ('interview', 'rejected', 'ghosted', 'offered', 'applied'):
+                response = client.patch('/api/jobs/%s/application' % job_id, json={'status': status})
+                self.assertEqual(response.status_code, 200)
+                current = response.json()
+                self.assertEqual(current['status'], status)
+                self.assertEqual(current['id'], initial['id'])
+                self.assertEqual(current['applied_at'], initial['applied_at'])
+                self.assertGreater(current['status_updated_at'], previous['status_updated_at'])
+                self.assertEqual(current['updated_at'], current['status_updated_at'])
+                self.assertEqual(client.get('/api/applied').json()[0]['application'], current)
+                self.assertEqual(client.get('/api/recommendations').json(), [])
+                self.assertEqual(client.patch('/api/jobs/%s/application' % job_id, json={'status': status}).json(), current)
+                previous = current
+            self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], history_count)
+            progressed = client.patch('/api/jobs/%s/application' % job_id, json={'status': 'interview'}).json()
+            client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'applied'})
+            self.assertEqual(client.get('/api/applied').json()[0]['application'], progressed)
+            self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_applications').fetchone()['n'], 1)
+
+    def test_application_updates_require_existing_candidate_application_and_valid_status(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        db.record_interaction(self.conn, other, job_id, 'applied')
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for status in ('interview', 'rejected', 'ghosted', 'offered'):
+                self.assertEqual(client.patch('/api/jobs/%s/application' % job_id, json={'status': status}).status_code, 404)
+            self.assertEqual(client.get('/api/applied').json(), [])
+            self.assertEqual(client.patch('/api/jobs/999999/application', json={'status': 'interview'}).status_code, 404)
+            client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'applied'})
+            for payload in ({'status': 'invalid'}, {'status': 'Interview'}, {'status': None}, {}, {'status': 'interview', 'candidate_profile_id': other}):
+                self.assertEqual(client.patch('/api/jobs/%s/application' % job_id, json=payload).status_code, 422)
+            self.assertEqual(client.get('/api/applied?status=invalid').status_code, 422)
+            self.assertEqual(client.patch('/api/jobs/%s/application' % job_id, json={'status': 'interview'}, headers={'Origin': 'https://other.example'}).status_code, 403)
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            self.conn.execute("UPDATE job_applications SET status='invalid'")
+        self.assertEqual({row['status'] for row in self.conn.execute('SELECT status FROM job_applications')}, {'applied'})
+
+    def test_application_unmark_removes_tracker_but_preserves_history_and_reapply_starts_fresh(self):
+        from internshipfeed import applications
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        candidate = db.development_profile(self.conn)['id']
+        db.record_interaction(self.conn, candidate, job_id, 'applied')
+        original = applications.update_application(self.conn, candidate, job_id, 'offered')
+        db.record_interaction(self.conn, candidate, job_id, 'unapplied')
+        self.assertEqual(applications.list_applications(self.conn, candidate), [])
+        self.assertIsNone(applications.update_application(self.conn, candidate, job_id, 'interview'))
+        self.assertFalse(db.interaction_states(self.conn, candidate)[0]['applied'])
+        db.record_interaction(self.conn, candidate, job_id, 'applied')
+        new = applications.list_applications(self.conn, candidate)[0]
+        self.assertNotEqual(new['id'], original['id'])
+        self.assertEqual(new['status'], 'applied')
+        self.assertGreater(new['applied_at'], original['applied_at'])
+        self.assertEqual([row['interaction_type'] for row in self.conn.execute('SELECT * FROM job_interactions ORDER BY id')], ['applied', 'unapplied', 'applied'])
+
+    def test_application_event_and_tracker_are_atomic_and_duplicate_applies_are_unique(self):
+        self.save(self.job)
+        job_id = db.list_jobs(self.conn)[0].id
+        candidate = db.development_profile(self.conn)['id']
+        with patch('internshipfeed.db.applications.record_application_event', side_effect=psycopg.OperationalError('Fixture tracker failure')):
+            with self.assertRaises(psycopg.OperationalError):
+                db.record_interaction(self.conn, candidate, job_id, 'applied')
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 0)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_applications').fetchone()['n'], 0)
+        def apply(_):
+            with self.connect() as conn:
+                db.record_interaction(conn, candidate, job_id, 'applied')
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(apply, range(4)))
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_applications').fetchone()['n'], 1)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 4)
+
+    def test_application_filters_and_status_updates_order_without_changing_recommendations(self):
+        ids = []
+        for index in range(3):
+            job = self.job.model_copy(update={'external_id': str(index), 'url': 'https://example.com/tracker/' + str(index)})
+            self.save(job)
+            ids.append(db.get_source_job(self.conn, job.source, job.external_id).canonical_job_id)
+        a, b, _ = ids
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            for job_id in (a, b):
+                client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'applied'})
+            before = client.get('/api/recommendations').json()
+            self.assertEqual([row['job']['id'] for row in client.get('/api/applied').json()], [b, a])
+            original_date = client.get('/api/applied').json()[1]['application']['applied_at']
+            for status in ('interview', 'rejected', 'ghosted', 'offered'):
+                client.patch('/api/jobs/%s/application' % a, json={'status': status})
+                rows = client.get('/api/applied').json()
+                self.assertEqual([row['job']['id'] for row in rows], [a, b])
+                self.assertEqual(rows[0]['application']['applied_at'], original_date)
+                self.assertEqual([row['job']['id'] for row in client.get('/api/applied?status=' + status).json()], [a])
+                self.assertEqual(client.get('/api/recommendations').json(), before)
+            self.assertEqual([row['job']['id'] for row in client.get('/api/applied?status=applied').json()], [b])
+
+    def test_application_migration_backfills_only_effectively_applied_and_preserves_indexes(self):
+        ids = []
+        for index in range(2):
+            job = self.job.model_copy(update={'external_id': str(index), 'url': 'https://example.com/backfill-app/' + str(index)})
+            self.save(job)
+            ids.append(db.get_source_job(self.conn, job.source, job.external_id).canonical_job_id)
+        candidate = db.development_profile(self.conn)['id']
+        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        self.conn.execute('DROP TABLE job_applications')
+        self.conn.execute('DROP INDEX job_interactions_profile_job_event_idx')
+        self.conn.execute("DELETE FROM schema_migrations WHERE version IN ('012_application_tracking.sql', '013_application_merge_index.sql')")
+        for profile, job_id, action, day in ((candidate, ids[0], 'applied', 1), (candidate, ids[0], 'applied', 2),
+                (candidate, ids[1], 'applied', 1), (candidate, ids[1], 'unapplied', 2), (other, ids[1], 'applied', 3)):
+            self.conn.execute('INSERT INTO job_interactions (candidate_profile_id, canonical_job_id, interaction_type, created_at) VALUES (%s,%s,%s,%s)',
+                (profile, job_id, action, datetime(2026, 11, day, tzinfo=timezone.utc)))
+        history = self.conn.execute('SELECT * FROM job_interactions ORDER BY id').fetchall()
+        db.initialize(self.conn)
+        rows = self.conn.execute('SELECT * FROM job_applications ORDER BY candidate_profile_id').fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual((rows[0]['canonical_job_id'], rows[0]['applied_at'].astimezone(timezone.utc).day), (ids[0], 1))
+        self.assertEqual((rows[1]['candidate_profile_id'], rows[1]['canonical_job_id']), (other, ids[1]))
+        from internshipfeed import applications
+        changed = applications.update_application(self.conn, candidate, ids[0], 'interview')
+        db.initialize(self.conn)
+        self.assertEqual(applications.list_applications(self.conn, candidate), [changed])
+        self.assertEqual(self.conn.execute('SELECT * FROM job_interactions ORDER BY id').fetchall(), history)
+        indexes = {row['indexname']: row['indexdef'] for row in self.conn.execute('SELECT indexname, indexdef FROM pg_indexes WHERE schemaname=current_schema()')}
+        self.assertIn('(candidate_profile_id, updated_at DESC, id DESC)', indexes['job_applications_profile_updated_idx'])
+        self.assertIn('(candidate_profile_id, status, updated_at DESC, id DESC)', indexes['job_applications_profile_status_updated_idx'])
+        self.assertIn('(candidate_profile_id, canonical_job_id, id DESC)', indexes['job_interactions_profile_job_event_idx'])
+        self.assertIn('(canonical_job_id)', indexes['job_applications_job_idx'])
+        self.assertIn('canonical_job_sources_pkey', indexes)
+        self.assertIn('canonical_job_sources_source_posting_id_key', indexes)
+
+    def test_application_merges_preserve_progress_dates_and_candidate_scope(self):
+        from internshipfeed import applications
+        candidate = db.development_profile(self.conn)['id']
+        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        records = [self.job.model_copy(update={'external_id': str(index), 'url': 'https://example.com/app-merge/' + str(index)}) for index in range(2)]
+        for record in records:
+            self.save(record)
+        a, b = [db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id for record in records]
+        for job_id in (a, b):
+            db.record_interaction(self.conn, candidate, job_id, 'applied')
+        original_date = min(row['applied_at'] for row in applications.list_applications(self.conn, candidate))
+        applications.update_application(self.conn, candidate, a, 'interview')
+        applications.update_application(self.conn, candidate, b, 'offered')
+        db.record_interaction(self.conn, other, b, 'applied')
+        applications.update_application(self.conn, other, b, 'rejected')
+        self.save(records[1].model_copy(update={'resolved_url': records[0].url, 'description': 'Verified role', 'enrichment_status': 'success'}))
+        merged = applications.list_applications(self.conn, candidate)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual((merged[0]['canonical_job_id'], merged[0]['status'], merged[0]['applied_at']), (a, 'offered', original_date))
+        self.assertEqual(applications.list_applications(self.conn, other)[0]['status'], 'rejected')
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            changed = client.patch('/api/jobs/%s/application' % b, json={'status': 'interview'})
+            self.assertEqual(changed.status_code, 200)
+            self.assertEqual(changed.json()['canonical_job_id'], a)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions WHERE canonical_job_id=%s', (b,)).fetchone()['n'], 2)
+
+    def test_application_merge_respects_later_unmark_across_aliases(self):
+        candidate = db.development_profile(self.conn)['id']
+        records = [self.job.model_copy(update={'external_id': str(index), 'url': 'https://example.com/app-undo-merge/' + str(index)}) for index in range(2)]
+        for record in records:
+            self.save(record)
+        a, b = [db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id for record in records]
+        for job_id in (a, b):
+            db.record_interaction(self.conn, candidate, job_id, 'applied')
+        db.record_interaction(self.conn, candidate, a, 'unapplied')
+        self.save(records[1].model_copy(update={'resolved_url': records[0].url, 'description': 'Verified role', 'enrichment_status': 'success'}))
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_applications').fetchone()['n'], 0)
+        self.assertFalse(db.interaction_states(self.conn, candidate)[0]['applied'])
+
+    def test_applied_order_ignores_clicks_and_duplicate_applies(self):
         ids = []
         for name in ('a', 'b'):
             job = self.job.model_copy(update={'external_id': name, 'url': 'https://example.com/job/' + name})
@@ -1475,7 +1654,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(datetime.fromisoformat(state['last_interaction_at'].replace('Z', '+00:00')).day, 3)
             repeated = db.record_interaction(self.conn, candidate, ids[0], 'applied')
             self.conn.execute("UPDATE job_interactions SET created_at='2026-11-04T12:00:00Z' WHERE id=%s", (repeated['id'],))
-            self.assertEqual([row['job']['id'] for row in client.get('/api/applied').json()], ids)
+            self.assertEqual([row['job']['id'] for row in client.get('/api/applied').json()], list(reversed(ids)))
 
     def test_saved_and_applied_retain_closed_dead_and_unlinked_jobs(self):
         ids = []

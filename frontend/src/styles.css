@@ -197,3 +197,10 @@ body:has(dialog[open]) { overflow: hidden; }
 .confirmation-choice:hover { border-color: var(--accent); }
 .confirmation-choice:first-child { border-color: var(--accent); background: var(--accent-soft); }
 .confirmation-error { margin: var(--space-3) 0 0; }
+
+.collection-tools { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-4); flex-wrap: wrap; }
+.application-filter, .application-status label { display: inline-flex; align-items: center; gap: var(--space-2); font-size: 12px; color: var(--text-muted); }
+.application-status { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.application-filter select, .application-status select { min-height: 32px; padding: var(--space-1) var(--space-2); font-size: 12px; }
+.application-status .field-error { flex-basis: 100%; margin: 0; }
+.application-status select:focus-visible { outline-color: var(--accent); }

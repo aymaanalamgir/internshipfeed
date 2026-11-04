@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from . import applications
 from .models import CandidateProfileUpdate, CanonicalJob, JobDetails, JobInteractionState, JobKeywords, JobListing, SourceJobReference
 from .reconciliation import RECONCILIATION_LOCK, backfill, canonicalize_url, link_posting, reconcile, refresh_canonical, root_id
 from .sources import SOURCES, get_source
@@ -265,6 +266,9 @@ def candidate_job_details(conn, profile_id, view='recommended', **filters):
     elif view in {'saved', 'applied', 'dismissed'}:
         selected = [job_id for job_id, state in states.items()
                     if (state.saved and not state.dismissed if view == 'saved' else getattr(state, view))]
+        if filters.get('job_ids') is not None:
+            wanted = set(filters['job_ids'])
+            selected = [job_id for job_id in selected if job_id in wanted]
         # Workflow history survives closure and source URL corrections/unlinking.
         details = list_job_details(conn, job_ids=selected, include_inactive=True, include_unlinked=True)
     else:
@@ -359,10 +363,15 @@ def update_development_profile(conn: psycopg.Connection, update: CandidateProfil
 
 
 def record_interaction(conn, profile_id, canonical_id, interaction_type):
-    canonical_id = root_id(conn, canonical_id)
-    if canonical_id is None or not conn.execute('SELECT 1 FROM canonical_jobs WHERE id=%s', (canonical_id,)).fetchone():
-        raise ValueError('Unknown canonical job')
-    return conn.execute('INSERT INTO job_interactions (candidate_profile_id, canonical_job_id, interaction_type) VALUES (%s,%s,%s) RETURNING *', (profile_id, canonical_id, interaction_type)).fetchone()
+    with conn.transaction():
+        conn.execute('SELECT pg_advisory_xact_lock(%s)', (RECONCILIATION_LOCK,))
+        canonical_id = root_id(conn, canonical_id)
+        if canonical_id is None or not conn.execute('SELECT 1 FROM canonical_jobs WHERE id=%s', (canonical_id,)).fetchone():
+            raise ValueError('Unknown canonical job')
+        event = conn.execute('INSERT INTO job_interactions (candidate_profile_id, canonical_job_id, interaction_type) VALUES (%s,%s,%s) RETURNING *',
+                             (profile_id, canonical_id, interaction_type)).fetchone()
+        applications.record_application_event(conn, profile_id, canonical_id, interaction_type, event['created_at'])
+        return event
 
 
 INTERACTION_LINEAGE = """WITH RECURSIVE lineage AS (

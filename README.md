@@ -92,13 +92,44 @@ jobs, grouping languages, frameworks, tools/platforms, concepts, and requirement
 | `ingestion_batches`, `ingestion_runs` | Overall sync progress and per-source execution status/counts, timing, snapshot, errors, and diagnostic reports. Batch reports retain exact new canonical IDs. |
 | `candidate_profiles` | `target_roles`, `skills`, `preferred_locations`, `preferred_terms` as `text[]`; nullable integer `graduation_year`; created/updated timestamps. |
 | `resumes` | Candidate ID, filename, extracted text, upload time. Uploads append versions; raw PDF files are not retained. |
-| `job_interactions` | Append-only candidate/job/type/time events; effective flags and dates are computed, not stored. |
+| `job_interactions` | Append-only candidate/job/type/time behavior events; effective Saved/Applied/Dismissed flags remain derived. |
+| `job_applications` | Current application status and submission/update timestamps; unique `(candidate_profile_id, canonical_job_id)`, checked statuses, candidate/job foreign keys. |
 | `job_notifications` | Candidate/job/channel, provider message ID, acceptance time; unique `(candidate_profile_id, canonical_job_id, channel)`. |
 
 [Migrations](internshipfeed/migrations/) are tracked in `schema_migrations`;
 repeatable initialization preserves IDs/events. Snapshots retain dataset versions;
 postings retain their latest observation. Unrecoverable legacy content and unverified
 commit SHAs stay null. PostgreSQL is authoritative; `data/` holds diagnostics.
+
+### Application tracking and indexes
+
+`job_applications` stores `id`, candidate/job IDs, `status`, `applied_at`,
+`status_updated_at`, `created_at`, and `updated_at`. An `applied` event and its
+initial tracker row commit together. Repeated Apply preserves the original date
+and progression; status-only updates change `status_updated_at`/`updated_at`
+without adding behavior events. Unmark removes the current tracker row and retains
+interaction history; reapplying starts a fresh record. Migration 012 backfills only
+effectively applied jobs, using the first submission after the latest Unmark.
+
+Canonical merges consolidate trackers per candidate: the latest effective Apply/
+Unmark decides retention; the latest status update wins, with the earliest stored
+submission date retained. Historical interaction IDs are preserved. Application
+outcomes do not change recommendation weights or behavior evidence.
+
+| Query pattern | Index | Benefit |
+| --- | --- | --- |
+| Applied for one candidate, ordered by latest update | `job_applications(candidate_profile_id, updated_at DESC, id DESC)` | Supports default history ordering. |
+| Applied filtered by candidate and status, same order | `job_applications(candidate_profile_id, status, updated_at DESC, id DESC)` | Narrows status views before loading job metadata. |
+| Reconcile trackers when canonical IDs merge | `job_applications(canonical_job_id)` | Finds affected candidate records without scanning all applications. |
+| Candidate/job history and latest-event lookup across aliases | `job_interactions(candidate_profile_id, canonical_job_id, id DESC)` | Supports candidate-scoped identity joins and event lookup. |
+
+Migrations 012/013 add these indexes. Existing interaction candidate/time and job/time indexes remain. The mapping
+primary key `(canonical_job_id, source_posting_id)` and unique `source_posting_id`
+already cover both mapping directions. No duplicate mapping indexes were added.
+Canonical status/date indexes already exist. Current canonical visibility/sorting
+occurs after loading, so no combined status/date index was added. Discovery uses
+exact IDs, and event-type filtering follows effective-state resolution; neither
+needs the additional proposed time/type indexes.
 
 ## Ranking
 
@@ -170,8 +201,8 @@ focus, and reduced-motion support are shared requirements.
 | --- | --- | --- |
 | Recommended | `/`, `/recommendations` | Active/unknown, not saved, dismissed, or applied; personalized rank. |
 | All listings | `/listings` | Active/unknown, not dismissed or applied; saved jobs included. Search/metadata filters, chronological order, no scores. |
+| Applied | `/applied` | Submitted jobs at every application status, including inactive/dismissed jobs; most recently updated application first. |
 | Saved | `/saved` | Saved and not dismissed, including applied jobs; latest save first. |
-| Applied | `/applied` | Applied, including saved/dismissed/inactive jobs; latest application first. |
 | Dismissed | `/dismissed` | Dismissed, including saved/applied/inactive jobs; latest dismissal first, with Restore. |
 
 Profile and job details open in drawers over the current tab. `/profile` opens
@@ -198,6 +229,22 @@ merged IDs and selects the latest event per family, returning flags, dates, and
 stale responses, and keeps failed confirmation actions open for retry. Restoring a
 job preserves Saved/Applied and posting status. No new event types or stored
 workflow flags are introduced.
+
+### Applied tracker
+
+Navigation order is **Recommended → All listings → Applied → Saved → Dismissed**;
+Profile remains a drawer. Applied cards expose a compact status selector:
+**Applied, Interview, Rejected, Ghosted, Offered**. Every status remains in Applied.
+The filter offers All or one status; edits surface recently updated applications
+without changing their original Applied date. Failed requests retain the old status
+and allow retry. Cards in other tabs and job details omit this control.
+
+`GET /api/applied?status=interview` returns application metadata with each card.
+`PATCH /api/jobs/{id}/application` accepts `{ "status": "interview" }` and returns
+the confirmed tracker record. The same candidate/local-write rules apply; a job
+without an existing application returns 404, and unsupported statuses return 422.
+Status editing uses the tracker, while Dismissed/Restore continues to use the
+existing derived interaction state and never deletes history.
 
 ### Profile and résumé
 
@@ -226,11 +273,12 @@ FastAPI's **`/docs`** is the full request/response reference. Core surfaces:
 | --- | --- |
 | `GET /api/jobs`, `/api/feed` | Candidate-visible canonical jobs or detail envelopes; `q`, `source`, `source_id`, `status` filters. |
 | `GET /api/jobs/{id}`, `/api/jobs/{id}/details` | Single job/detail, resolving merged IDs. |
-| `GET /api/recommendations`, `/api/saved`, `/api/applied`, `/api/dismissed` | Scored collections with SQL-derived state, term, and keywords; Recommended accepts `min_score=0..100`. |
+| `GET /api/recommendations`, `/api/saved`, `/api/applied`, `/api/dismissed` | Scored collections with SQL-derived state, term, and keywords; Recommended accepts `min_score=0..100`; Applied includes `application` metadata and accepts a status filter. |
 | `GET /api/profile`, `PUT /api/profile` | Development profile; PUT requires all five fields, rejects extra fields, and returns persisted values. |
 | `POST /api/resumes` | Multipart `file` upload; HTTP 201 with résumé metadata and extracted text. |
 | `GET /api/resumes/latest`, `/api/resumes/{id}/skill-suggestions` | Candidate-scoped metadata or `{resume_id, skills, aliases}`; no raw text. |
 | `GET /api/interactions` | Effective candidate/job state; jobs without events default to false flags. |
+| `PATCH /api/jobs/{id}/application` | Update an existing submitted application; checked `status`, immutable submission date. |
 | `POST /api/jobs/{id}/interactions` | `{type: click \| save \| unsave \| applied \| unapplied \| dismiss \| undismiss}`; HTTP 201 event + state snapshot. |
 | `POST /api/sync` | HTTP 202: start or return the active multi-source batch. |
 | `GET /api/sources`, `/api/ingestion-batches/latest`, `/api/ingestion-batches/{uuid}` | Source configuration and overall progress. |
@@ -345,7 +393,7 @@ python scripts/check_daily_email.py --browser-executable /path/to/chromium
 ```
 
 Checks cover parsing/deduplication, migrations, merges, ranking, reversible state,
-PDF suggestions, UI/keyboard/mobile behavior, failure isolation, and email dry runs.
+PDF suggestions, application progression/backfill/indexes, UI/keyboard/mobile behavior, failure isolation, and email dry runs.
 Browser runners clean up temporary schemas/API processes; providers are mocked.
 Prefer the isolated runner: `check_profile_ui.py` alone appends fixture résumés.
 Unit-only command: `python -m unittest discover -s tests -v`; DB tests require

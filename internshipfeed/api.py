@@ -10,8 +10,8 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db
-from .models import (CandidateJobView, CandidateProfile, CandidateProfileUpdate, CanonicalJob,
+from . import applications, db
+from .models import (ApplicationStatus, ApplicationUpdate, AppliedJobView, JobApplication, CandidateJobView, CandidateProfile, CandidateProfileUpdate, CanonicalJob,
                      InteractionReceipt, InteractionRequest, JobDetails, JobInteractionState, RecommendedJobView, Resume, ResumeMetadata, ResumeSkillSuggestions)
 from .matching import score_job
 from .behavioral import build_behavior_profile
@@ -124,22 +124,29 @@ def _development_candidate(conn):
     return profile
 
 
-def _job_collection(conn, view, min_score=0):
+def _job_collection(conn, view, min_score=0, application_status=None):
     profile = CandidateProfile.model_validate(_development_candidate(conn))
-    entries = db.candidate_job_details(conn, profile.id, view)
+    tracked = applications.list_applications(conn, profile.id, application_status) if view == 'applied' else []
+    application_by_job = {row['canonical_job_id']: row for row in tracked}
+    entries = db.candidate_job_details(conn, profile.id, view,
+                                      **({'job_ids': list(application_by_job)} if view == 'applied' else {}))
     details, states = [item for item, _ in entries], {item.job.id: state for item, state in entries}
     if view == 'recommended':
         behavior = build_behavior_profile(db.behavior_history(conn, profile.id))
         matches = rank_recommendations(profile, details, behavior, min_score=min_score)
     else:
         matches = [score_job(profile, item) for item in details]
-    if view != 'recommended':
+    if view == 'applied':
+        order = {row['canonical_job_id']: index for index, row in enumerate(tracked)}
+        matches.sort(key=lambda match: order[match.job.id])
+    elif view != 'recommended':
         field = {'saved': 'saved_at', 'applied': 'applied_at', 'dismissed': 'dismissed_at'}[view]
         matches.sort(key=lambda match: (getattr(states[match.job.id], field).timestamp(), match.job.id), reverse=True)
-    result_model = RecommendedJobView if view == 'recommended' else CandidateJobView
+    result_model = RecommendedJobView if view == 'recommended' else AppliedJobView if view == 'applied' else CandidateJobView
     metadata = {item.job.id: item for item in details}
     return [result_model(**match.model_dump(), interaction_state=states[match.job.id],
-                         term=metadata[match.job.id].term, keywords=metadata[match.job.id].keywords) for match in matches]
+                         term=metadata[match.job.id].term, keywords=metadata[match.job.id].keywords,
+                         **({'application': application_by_job[match.job.id]} if view == 'applied' else {})) for match in matches]
 
 
 @app.get("/api/recommendations", response_model=List[RecommendedJobView])
@@ -152,9 +159,9 @@ def saved_jobs(conn=Depends(connection)):
     return _job_collection(conn, 'saved')
 
 
-@app.get("/api/applied", response_model=List[CandidateJobView])
-def applied_jobs(conn=Depends(connection)):
-    return _job_collection(conn, 'applied')
+@app.get("/api/applied", response_model=List[AppliedJobView])
+def applied_jobs(status: Optional[ApplicationStatus] = None, conn=Depends(connection)):
+    return _job_collection(conn, 'applied', application_status=status)
 
 
 @app.get("/api/dismissed", response_model=List[CandidateJobView])
@@ -209,6 +216,16 @@ def job_interaction(job_id: int, interaction: InteractionRequest, request: Reque
         return db.record_interaction_with_state(conn, candidate['id'], job_id, interaction.type)
     except ValueError:
         raise HTTPException(404, "Job not found") from None
+
+
+@app.patch("/api/jobs/{job_id}/application", response_model=JobApplication)
+def update_application(job_id: int, update: ApplicationUpdate, request: Request, conn=Depends(connection)):
+    local_mutation(request)
+    candidate = _development_candidate(conn)
+    result = applications.update_application(conn, candidate['id'], job_id, update.status)
+    if result is None:
+        raise HTTPException(404, "Application not found. Mark this job as applied first.")
+    return result
 
 
 @app.post("/api/sync", status_code=202)

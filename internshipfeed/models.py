@@ -211,10 +211,34 @@ class InteractionReceipt(JobInteraction):
     interaction_state: JobInteractionState
 
 
+ApplicationStatus = Literal["applied", "interview", "rejected", "ghosted", "offered"]
+
+
+class ApplicationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: ApplicationStatus
+
+
+class JobApplication(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int = Field(gt=0)
+    candidate_profile_id: int = Field(gt=0)
+    canonical_job_id: int = Field(gt=0)
+    status: ApplicationStatus
+    applied_at: datetime
+    status_updated_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 class CandidateJobView(MatchResult):
     interaction_state: JobInteractionState
     term: Optional[str] = None
     keywords: JobKeywords = Field(default_factory=JobKeywords)
+
+
+class AppliedJobView(CandidateJobView):
+    application: JobApplication
 
 
 class RecommendedJobView(RankedMatchResult):
