@@ -184,3 +184,16 @@ body:has(dialog[open]) { overflow: hidden; }
 .skill-suggestion:hover { border-color: var(--accent); color: var(--accent); }
 .skill-suggestion svg { width: 12px; height: 12px; flex-shrink: 0; }
 .profile-field > .tag-list { margin-bottom: var(--space-2); }
+
+.drawer.apply-drawer { inset: 0; width: min(420px, calc(100% - 32px)); height: fit-content; max-height: calc(100dvh - 48px); margin: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.apply-drawer .drawer-panel { min-height: 0; }
+.apply-drawer .drawer-header { padding: var(--space-4) var(--space-6); }
+.apply-drawer .drawer-header h2 { font-size: 18px; }
+.apply-drawer .drawer-content { padding: var(--space-4) var(--space-6) var(--space-6); }
+.confirmation-job { color: var(--text-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; margin-bottom: var(--space-4); }
+.confirmation-choices { display: grid; gap: var(--space-2); }
+.confirmation-choice { display: grid; gap: var(--space-1); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; font-size: 13px; }
+.confirmation-choice small { color: var(--text-muted); font-size: 11px; }
+.confirmation-choice:hover { border-color: var(--accent); }
+.confirmation-choice:first-child { border-color: var(--accent); background: var(--accent-soft); }
+.confirmation-error { margin: var(--space-3) 0 0; }

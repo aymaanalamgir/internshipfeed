@@ -32,7 +32,7 @@ export function JobDetailsDrawer({ id, onClose, workflow, sources, view }: { id:
         {details.keywords.requirements.length > 0 && <ul className="requirements">{details.keywords.requirements.map((value, index) => <li key={index}>{value}</li>)}</ul>}
         <div className="job-description">{details.description || 'A description is not available yet. Open the application for the full posting.'}</div>
         <JobActions job={job} state={workflow.states[job.id] ?? workflow.states[id] ?? emptyInteraction(job.id)}
-          pending={workflow.pending[job.id]} error={workflow.errors[job.id]} appliedView={view === 'applied'}
+          pending={workflow.pending[job.id]} error={workflow.errors[job.id]} appliedView={view === 'applied'} showAppliedAction
           onApply={workflow.apply} onSave={(jobId, type) => void workflow.act(jobId, type)} onApplied={(jobId, type) => void workflow.act(jobId, type)}
           onDismiss={(jobId, type) => void workflow.act(jobId, type).then(success => { if (success) onClose(); })} />
         {provenance.length > 0 && <p className="provenance">Listed by {provenance.map((source, index) => <span key={source.source_id}>

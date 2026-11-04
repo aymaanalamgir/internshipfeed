@@ -26,7 +26,7 @@ export function visibleJobs(view: JobView, jobs: Recommendation[], states: Inter
     if (view === 'dismissed') return state.dismissed;
     if (view === 'applied') return state.applied;
     if (view === 'saved') return state.saved && !state.dismissed;
-    return !state.dismissed && !state.applied && !['closed', 'dead'].includes(job.status);
+    return !state.saved && !state.dismissed && !state.applied && !['closed', 'dead'].includes(job.status);
   });
 }
 

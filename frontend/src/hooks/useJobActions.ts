@@ -1,10 +1,11 @@
 // Coordinate confirmed interaction snapshots, pending requests, errors, and announcements.
 import { useCallback, useRef, useState } from 'react';
 import { recordInteraction } from '../api/interactions';
-import { confirmInteraction } from '../lib/workflow';
-import type { InteractionState, InteractionStates, InteractionType } from '../types/jobs';
+import { applicationUrl, confirmInteraction } from '../lib/workflow';
+import type { CanonicalJob, InteractionState, InteractionStates, InteractionType } from '../types/jobs';
 
 export function useJobActions() {
+  const [application, setApplication] = useState<CanonicalJob | null>(null);
   const [states, setStates] = useState<InteractionStates>({});
   const [pending, setPending] = useState<Record<number, InteractionType | undefined>>({});
   const [errors, setErrors] = useState<Record<number, string>>({});
@@ -37,11 +38,17 @@ export function useJobActions() {
       setPending(current => ({ ...current, [id]: undefined }));
     }
   }
-  function apply(id: number) {
+  function closeApplication(id: number) {
+    setApplication(current => current?.id === id ? null : current);
+  }
+  function apply(job: CanonicalJob) {
+    if (!applicationUrl(job.application_url)) return;
+    const id = job.id;
+    if (!states[id]?.applied) setApplication(job);
     setErrors(current => ({ ...current, [id]: '' }));
     void recordInteraction(id, 'click').then(receipt => setStates(current => confirmInteraction(current, id, receipt)))
       .catch(() => setErrors(current => ({ ...current, [id]: 'Click could not be recorded. The application link is still available.' })));
   }
-  return { states, install, pending, errors, announcement, act, apply };
+  return { application, closeApplication, states, install, pending, errors, announcement, act, apply };
 }
 export type JobWorkflow = ReturnType<typeof useJobActions>;

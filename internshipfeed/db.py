@@ -258,8 +258,9 @@ def list_job_details(conn, status=None, query=None, include_inactive=False, sour
 def candidate_job_details(conn, profile_id, view='recommended', **filters):
     """Product membership over SQL-derived state; no scoring or event replay."""
     states = {row['job_id']: JobInteractionState.model_validate(row) for row in interaction_states(conn, profile_id)}
-    if view == 'recommended':
-        hidden = [job_id for job_id, state in states.items() if state.dismissed or state.applied]
+    if view in {'recommended', 'listings'}:
+        hidden = [job_id for job_id, state in states.items()
+                  if state.dismissed or state.applied or (view == 'recommended' and state.saved)]
         details = list_job_details(conn, exclude_job_ids=hidden, **filters)
     elif view in {'saved', 'applied', 'dismissed'}:
         selected = [job_id for job_id, state in states.items()

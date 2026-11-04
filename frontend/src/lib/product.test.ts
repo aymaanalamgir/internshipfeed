@@ -54,8 +54,9 @@ test('SkillTag uses one escaped label and an accessible optional remove control'
 });
 test('shared actions preserve order and native external application behavior', () => {
   const html = renderToStaticMarkup(createElement(JobActions, { job: listing.job, state: emptyInteraction(1), onApply() {}, onSave() {}, onApplied() {}, onDismiss() {} }));
-  assert.ok(html.indexOf('Apply') < html.indexOf('Save job') && html.indexOf('Save job') < html.indexOf('Mark job as applied') && html.indexOf('Mark job as applied') < html.indexOf('Dismiss job'));
+  assert.ok(html.indexOf('Apply') < html.indexOf('Save job') && html.indexOf('Save job') < html.indexOf('Dismiss job'));
   assert.match(html, /target="_blank" rel="noopener noreferrer"/);
+  assert.doesNotMatch(html, /Mark job as applied/);
 });
 test('Applied actions retain history state and omit Dismiss', () => {
   const html = renderToStaticMarkup(createElement(JobActions, { job: listing.job, state: { ...emptyInteraction(1), applied: true, saved: true }, appliedView: true,
@@ -73,5 +74,15 @@ test('dismissed jobs expose an enabled Restore action, including in Applied', ()
     assert.match(html, /aria-label="Restore job"/);
     assert.doesNotMatch(html, /aria-label="Dismiss job"/);
     assert.doesNotMatch(html, /disabled/);
+  }
+});
+
+test('manual Applied is available in details and invalid URLs expose no Apply link', () => {
+  const props = { job: listing.job, state: emptyInteraction(1), onApply() {}, onSave() {}, onApplied() {}, onDismiss() {} };
+  assert.match(renderToStaticMarkup(createElement(JobActions, { ...props, showAppliedAction: true })), /Mark job as applied/);
+  for (const url of [null, 'javascript:alert(1)', 'https://user:password@example.com/job']) {
+    const html = renderToStaticMarkup(createElement(JobActions, { ...props, job: { ...listing.job, application_url: url } }));
+    assert.doesNotMatch(html, /apply-action|>Apply/);
+    assert.match(html, /Save job/);
   }
 });

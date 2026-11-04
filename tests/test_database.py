@@ -1122,7 +1122,8 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(client.get('/api/recommendations').json(), [])
             self.assertEqual(db.behavior_history(self.conn, candidate)[0].interaction_types, frozenset({'save', 'applied'}))
             client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'unapplied'})
-            self.assertEqual(client.get('/api/recommendations').json()[0]['job']['id'], job_id)
+            self.assertEqual(client.get('/api/recommendations').json(), [])
+            self.assertEqual(client.get('/api/feed').json()[0]['job']['id'], job_id)
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             self.assertEqual(client.get('/api/dismissed').json(), [])
             self.assertFalse(client.get('/api/interactions').json()[0]['dismissed'])
@@ -1183,6 +1184,29 @@ class DatabaseTests(unittest.TestCase):
         db.record_interaction(self.conn, candidate, job_id, 'undismiss')
         self.assertFalse(db.interaction_states(self.conn, candidate)[0]['dismissed'])
 
+    def test_post_apply_choices_reuse_events_and_saved_jobs_leave_only_recommended(self):
+        self.save(self.job.model_copy(update={'title': 'Backend Engineer Intern'}))
+        job_id = db.list_jobs(self.conn)[0].id
+        candidate = db.development_profile(self.conn)['id']
+        with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
+            clicked = client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'click'}).json()
+            self.assertFalse(clicked['interaction_state']['saved'] or clicked['interaction_state']['applied'])
+            self.assertEqual(client.get('/api/applied').json(), [])
+            self.assertEqual(len(client.get('/api/recommendations').json()), 1)
+            self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 1)
+            client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'save'})
+            self.assertEqual(client.get('/api/recommendations').json(), [])
+            self.assertEqual(len(client.get('/api/saved').json()), 1)
+            self.assertEqual(len(client.get('/api/feed').json()), 1)
+            self.assertEqual(len(client.get('/api/jobs').json()), 1)
+            self.assertEqual(db.candidate_job_details(self.conn, candidate), [])
+            applied = client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'applied'}).json()['interaction_state']
+            self.assertTrue(applied['saved'] and applied['applied'])
+            self.assertEqual(len(client.get('/api/saved').json()), 1)
+            self.assertEqual(len(client.get('/api/applied').json()), 1)
+            self.assertEqual(client.get('/api/feed').json(), [])
+            self.assertEqual([row['interaction_type'] for row in self.conn.execute('SELECT * FROM job_interactions ORDER BY id')], ['click', 'save', 'applied'])
+
     def test_save_and_applied_reversals_restore_collections_and_survive_refresh(self):
         self.save(self.job)
         job_id = db.list_jobs(self.conn)[0].id
@@ -1200,7 +1224,7 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(state['applied_at'] is not None, applied)
                 self.assertEqual(len(client.get('/api/saved').json()), int(saved))
                 self.assertEqual(len(client.get('/api/applied').json()), int(applied))
-                self.assertEqual(len(client.get('/api/recommendations').json()), int(not applied))
+                self.assertEqual(len(client.get('/api/recommendations').json()), int(not applied and not saved))
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             state = client.get('/api/interactions').json()[0]
             self.assertFalse(state['saved'] or state['applied'])
@@ -1402,17 +1426,17 @@ class DatabaseTests(unittest.TestCase):
             save = act(a, 'save')
             self.assertTrue(save['interaction_state']['saved'])
             self.assertEqual(save['interaction_state']['saved_at'], save['created_at'])
-            self.assertEqual(set(members('/api/recommendations')), set(ids))
+            self.assertEqual(set(members('/api/recommendations')), {b, c})
             self.assertEqual(set(members('/api/saved')), {a})
             self.assertEqual(members('/api/applied'), {})
             act(c, 'applied')
-            self.assertEqual(set(members('/api/recommendations')), {a, b})
+            self.assertEqual(set(members('/api/recommendations')), {b})
             self.assertEqual(set(members('/api/applied')), {c})
             act(c, 'save')
             self.assertEqual(set(members('/api/saved')), {a, c})
             self.assertTrue(members('/api/saved')[c]['interaction_state']['applied'])
             act(b, 'dismiss')
-            self.assertEqual(set(members('/api/recommendations')), {a})
+            self.assertEqual(set(members('/api/recommendations')), set())
             self.assertEqual({row['id'] for row in client.get('/api/jobs').json()}, {a})
             self.assertEqual({row['job']['id'] for row in client.get('/api/feed').json()}, {a})
             for row in list(members('/api/saved').values()) + list(members('/api/applied').values()):

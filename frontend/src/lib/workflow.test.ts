@@ -19,7 +19,7 @@ test('a confirmed save installs the SQL-derived snapshot', () => {
   const response = receipt('save', { saved: true, saved_at: '2026-11-02T12:00:00Z' });
   const states = confirmInteraction({}, 1, response);
   assert.deepEqual(states[1], response.interaction_state);
-  assert.deepEqual(visibleJobs('recommended', [recommendation], states), [recommendation]);
+  assert.deepEqual(visibleJobs('recommended', [recommendation], states), []);
   assert.deepEqual(visibleJobs('saved', [recommendation], states), [recommendation]);
 });
 test('click never marks the candidate applied', () => {

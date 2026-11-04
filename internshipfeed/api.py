@@ -57,7 +57,7 @@ def jobs(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
          source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection)):
     profile = _development_candidate(conn)
-    return [details.job for details, _ in db.candidate_job_details(conn, profile['id'], status=status, query=q, source=source, source_id=source_id)]
+    return [details.job for details, _ in db.candidate_job_details(conn, profile['id'], 'listings', status=status, query=q, source=source, source_id=source_id)]
 
 
 @app.get("/api/feed", response_model=List[JobDetails])
@@ -65,7 +65,7 @@ def feed(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
          source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection)):
     profile = _development_candidate(conn)
-    return [details for details, _ in db.candidate_job_details(conn, profile['id'], status=status, query=q, source=source, source_id=source_id)]
+    return [details for details, _ in db.candidate_job_details(conn, profile['id'], 'listings', status=status, query=q, source=source, source_id=source_id)]
 
 
 @app.get("/api/jobs/{job_id}/details", response_model=JobDetails)

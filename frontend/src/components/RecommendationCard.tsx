@@ -1,5 +1,5 @@
 // Present a scored job with technical tags, workflow dates, explanations, and actions.
-import type { AppliedAction, DismissAction, CandidateJob, InteractionState, InteractionType, JobView, RankingSignals, Recommendation, SaveAction } from '../types/jobs';
+import type { AppliedAction, DismissAction, CandidateJob, CanonicalJob, InteractionState, InteractionType, JobView, RankingSignals, Recommendation, SaveAction } from '../types/jobs';
 import { JobActions } from './JobActions';
 import { SkillTag } from './SkillTag';
 import { MatchSummary } from './MatchSummary';
@@ -7,7 +7,7 @@ import { MatchSummary } from './MatchSummary';
 interface Props {
   view?: JobView; recommendation: Recommendation & Partial<RankingSignals> & Partial<Pick<CandidateJob, 'term' | 'keywords'>>;
   interactionState: InteractionState; pending?: InteractionType; error?: string;
-  onApply: (id: number) => void; onSave: (id: number, type: SaveAction) => void; onDismiss: (id: number, type: DismissAction) => void; onApplied: (id: number, type: AppliedAction) => void;
+  onApply: (job: CanonicalJob) => void; onSave: (id: number, type: SaveAction) => void; onDismiss: (id: number, type: DismissAction) => void; onApplied: (id: number, type: AppliedAction) => void;
   onOpenJob?: (id: number) => void; onOpenProfile?: () => void;
 }
 export function RecommendationCard({ view = 'recommended', recommendation, interactionState, pending, error,

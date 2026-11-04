@@ -1,5 +1,6 @@
 // Compose the current job view, shared action state, and profile/job drawers.
 import { useEffect, useState } from 'react';
+import { ApplyConfirmation } from './components/ApplyConfirmation';
 import { TopNav } from './components/TopNav';
 import { ProfileDrawer } from './components/ProfileDrawer';
 import { JobDetailsDrawer } from './components/JobDetailsDrawer';
@@ -33,6 +34,7 @@ export default function App() {
       : <JobCollectionPage view={view} workflow={workflow} revision={revision} onOpenJob={setJobId} onOpenProfile={() => setProfileOpen(true)} />}
     <p className="sr-only" role="status">{workflow.announcement}</p>
     {profileOpen && <ProfileDrawer onClose={closeProfile} onSaved={refresh} />}
-    {jobId !== null && <JobDetailsDrawer key={jobId} id={jobId} onClose={() => setJobId(null)} workflow={workflow} sources={sources} view={view} />}
+    {jobId !== null && <JobDetailsDrawer key={`job-${jobId}`} id={jobId} onClose={() => setJobId(null)} workflow={workflow} sources={sources} view={view} />}
+    {workflow.application && <ApplyConfirmation key={`apply-${workflow.application.id}`} workflow={workflow} />}
   </>;
 }

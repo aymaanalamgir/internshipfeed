@@ -168,8 +168,8 @@ focus, and reduced-motion support are shared requirements.
 
 | Tab | Route | Membership and order |
 | --- | --- | --- |
-| Recommended | `/`, `/recommendations` | Active/unknown, not dismissed or applied; personalized rank. Saved-only jobs remain eligible. |
-| All listings | `/listings` | Same discovery eligibility; search and location/term/source/status filters, chronological order, no scores. |
+| Recommended | `/`, `/recommendations` | Active/unknown, not saved, dismissed, or applied; personalized rank. |
+| All listings | `/listings` | Active/unknown, not dismissed or applied; saved jobs included. Search/metadata filters, chronological order, no scores. |
 | Saved | `/saved` | Saved and not dismissed, including applied jobs; latest save first. |
 | Applied | `/applied` | Applied, including saved/dismissed/inactive jobs; latest application first. |
 | Dismissed | `/dismissed` | Dismissed, including saved/applied/inactive jobs; latest dismissal first, with Restore. |
@@ -178,11 +178,26 @@ Profile and job details open in drawers over the current tab. `/profile` opens
 Profile over Recommended; `/feed` aliases All listings. Shared components display
 server scores/order, progressively rendering 24 cards or 40 directory rows.
 
-Apply opens HTTP(S) in a new tab (`noopener noreferrer`); click telemetry is
-independent of Applied. Save/Unsave, Applied/Unmark, and Dismiss/Restore set separate
-flags. SQL resolves merged IDs and selects the latest event per family, returning
-flags, dates, and `last_event_id`. React confirms snapshots, rejects stale responses,
-and retains state on failure. Restore preserves Saved/Applied and posting status.
+Apply opens HTTP(S) immediately in a new tab (`noopener noreferrer`), records
+`click` without blocking navigation, and asks **Did you apply for this role?**
+
+| Confirmation | Existing interaction / result |
+| --- | --- |
+| Yes, I applied | `applied`; enters Applied and leaves Recommended, preserving Saved. |
+| Save for later | `save` unless already saved; enters Saved and leaves Recommended. Saved jobs remain in All listings. |
+| Keep in feed / Escape / close / outside click | No additional event; existing workflow state remains intact. |
+
+Click means interest; Applied confirms submission and retains its stronger ranking
+weight. Already-applied jobs open their application without another prompt. Cards
+show Apply, Save, and Dismiss/Restore; **Job Details → Mark applied** supports
+applications completed elsewhere. Applied history retains its Unmark control.
+
+Save/Unsave, Applied/Unmark, and Dismiss/Restore remain independent. SQL resolves
+merged IDs and selects the latest event per family, returning flags, dates, and
+`last_event_id`. React reconciles confirmed snapshots without reloading, rejects
+stale responses, and keeps failed confirmation actions open for retry. Restoring a
+job preserves Saved/Applied and posting status. No new event types or stored
+workflow flags are introduced.
 
 ### Profile and résumé
 
@@ -323,7 +338,9 @@ npm --prefix frontend test
 npm --prefix frontend run build
 # Optional browser dependency; supply your Chromium executable if needed.
 python -m pip install -e '.[browser]'
+python -m playwright install chromium
 python scripts/check_recommendations_ui.py --browser-executable /path/to/chromium
+python scripts/check_apply_ui.py --browser-executable /path/to/chromium
 python scripts/check_daily_email.py --browser-executable /path/to/chromium
 ```
 

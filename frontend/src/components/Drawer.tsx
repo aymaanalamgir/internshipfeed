@@ -3,7 +3,7 @@ import { useEffect, useId, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Icon } from './Icon';
 
-export function Drawer({ title, onClose, children, kind }: { title: string; onClose: () => void; children: ReactNode; kind: 'profile' | 'job' }) {
+export function Drawer({ title, onClose, children, kind }: { title: string; onClose: () => void; children: ReactNode; kind: 'profile' | 'job' | 'apply' }) {
   const ref = useRef<HTMLDialogElement>(null);
   const heading = useId();
   const close = useRef(onClose);
@@ -37,7 +37,7 @@ export function Drawer({ title, onClose, children, kind }: { title: string; onCl
     onClick={event => { if (event.target === event.currentTarget) ref.current?.close(); }}>
     <div className="drawer-panel">
       <header className="drawer-header"><h2 id={heading} tabIndex={-1}>{title}</h2>
-        <button className="icon-button" aria-label={`Close ${kind === 'profile' ? 'profile' : 'job details'}`} onClick={() => ref.current?.close()}><Icon name="close" /></button>
+        <button className="icon-button" aria-label={`Close ${{ profile: 'profile', job: 'job details', apply: 'application confirmation' }[kind]}`} onClick={() => ref.current?.close()}><Icon name="close" /></button>
       </header>
       <div className="drawer-content">{children}</div>
     </div>

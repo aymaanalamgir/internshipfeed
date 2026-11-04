@@ -92,9 +92,15 @@ try:
                 return page.locator('[data-job-id="%s"]' % job_id)
             def count(action):
                 return conn.execute('SELECT count(*) AS n FROM job_interactions WHERE interaction_type=%s', (action,)).fetchone()['n']
+            def mark_applied(job_id):
+                card(job_id).locator('.job-title').click()
+                drawer = page.get_by_role('dialog')
+                drawer.get_by_role('button', name='Mark job as applied', exact=True).click()
+                expect(drawer.get_by_role('button', name='Unmark job as applied', exact=True)).to_be_visible()
+                page.keyboard.press('Escape')
             page.goto(base + '/recommendations')
             expect(page.locator('.recommendation-card')).to_have_count(4)
-            assert card(first).locator('.recommendation-actions').locator('a,button').all_text_contents() == ['Apply', 'Save', 'Mark applied', '']
+            assert card(first).locator('.recommendation-actions').locator('a,button').all_text_contents() == ['Apply', 'Save', '']
             expect(card(first).locator('.match-hint')).to_contain_text('Role matches')
             screenshots = ROOT / 'data' / 'screenshots'
             screenshots.mkdir(parents=True, exist_ok=True)
@@ -119,20 +125,17 @@ try:
             assert count('save') == 0
             held[0].continue_()
             page.unroute(path)
-            expect(card(first).get_by_role('button', name='Unsave job', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(card(first)).to_have_count(0)
             expect(detail.get_by_role('button', name='Unsave job', exact=True)).to_have_attribute('aria-pressed', 'true')
             assert count('save') == 1
             page.keyboard.press('Escape')
-            expect(card(first).locator('.job-title')).to_be_focused()
+            expect(page.get_by_role('heading', name='Recommended', exact=True)).to_be_focused()
             page.reload()
-            expect(card(first).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
+            expect(card(first)).to_have_count(0)
             page.get_by_role('link', name='Saved', exact=True).click()
             expect(card(first).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
             page.reload()
             expect(card(first)).to_be_visible()
-            page.get_by_role('link', name='Recommended', exact=True).click()
-            expect(card(first)).to_be_visible()
-
             page.route(path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
             with page.expect_popup() as popup:
                 card(first).get_by_role('link', name='Apply', exact=True).click()
@@ -142,6 +145,7 @@ try:
             popup.value.close()
             expect(card(first).get_by_text('Click could not be recorded. The application link is still available.', exact=True)).to_be_visible()
             assert count('click') == 0
+            page.get_by_role('button', name='Keep in feed', exact=True).click()
             page.unroute(path)
             with page.expect_response(lambda response: response.url.endswith('/interactions') and response.request.method == 'POST') as click_response:
                 with page.expect_popup() as popup:
@@ -151,7 +155,9 @@ try:
             assert popup.value.evaluate('window.opener === null')
             popup.value.close()
             assert count('click') == 1
-            expect(card(first).get_by_role('button', name='Mark job as applied', exact=True)).to_have_attribute('aria-pressed', 'false')
+            page.get_by_role('button', name='Keep in feed', exact=True).click()
+            page.get_by_role('link', name='Recommended', exact=True).click()
+            expect(card(first)).to_have_count(0)
 
             dismiss_path = '**/api/jobs/%s/interactions' % second
             page.route(dismiss_path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
@@ -163,14 +169,14 @@ try:
             expect(card(second)).to_have_count(0)
             assert count('dismiss') == 1
             page.reload()
-            expect(card(first)).to_be_visible()
+            expect(card(first)).to_have_count(0)
             expect(card(second)).to_have_count(0)
 
-            card(third).get_by_role('button', name='Mark job as applied', exact=True).click()
+            mark_applied(third)
             expect(card(third)).to_have_count(0)
             assert count('applied') == 1
             page.reload()
-            expect(card(first)).to_be_visible()
+            expect(card(first)).to_have_count(0)
             expect(card(third)).to_have_count(0)
             page.get_by_role('link', name='Applied', exact=True).click()
             expect(card(third).get_by_role('button', name='Unmark job as applied', exact=True)).to_have_text('Applied')
@@ -187,7 +193,7 @@ try:
             expect(card(third).get_by_role('button', name='Unmark job as applied', exact=True)).to_be_visible()
             page.reload()
             expect(card(third).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
-            assert {row['job']['id'] for row in page.request.get(base + '/api/recommendations').json()} == {first, ids[3]}
+            assert {row['job']['id'] for row in page.request.get(base + '/api/recommendations').json()} == {ids[3]}
             for endpoint in ('recommendations', 'saved', 'applied'):
                 for row in page.request.get(base + '/api/' + endpoint).json():
                     old = next(item for item in original if item['job']['id'] == row['job']['id'])
@@ -255,8 +261,12 @@ try:
             page.set_viewport_size({'width': 1280, 'height': 1000})
             page.goto(base + '/recommendations')
             card(history_id).get_by_role('button', name='Save job', exact=True).click()
-            expect(card(history_id).get_by_role('button', name='Unsave job', exact=True)).to_be_visible()
-            card(history_id).get_by_role('button', name='Mark job as applied', exact=True).click()
+            expect(card(history_id)).to_have_count(0)
+            page.get_by_role('link', name='Saved', exact=True).click()
+            mark_applied(history_id)
+            page.get_by_role('link', name='Recommended', exact=True).click()
+            expect(page.get_by_role('heading', name='Recommended', exact=True)).to_be_visible()
+            expect(card(data_id)).to_be_visible()
             expect(card(history_id)).to_have_count(0)
             page.reload()
             expect(card(data_id)).to_be_visible()
@@ -312,7 +322,8 @@ try:
             card(history_id).locator('.job-title').click()
             undo_detail = page.get_by_role('dialog')
             undo_detail.get_by_role('button', name='Save job', exact=True).click()
-            expect(card(history_id).get_by_role('button', name='Unsave job', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(card(history_id)).to_have_count(0)
+            expect(undo_detail.get_by_role('button', name='Unsave job', exact=True)).to_have_attribute('aria-pressed', 'true')
             undo_detail.get_by_role('button', name='Unsave job', exact=True).click()
             expect(card(history_id).get_by_role('button', name='Save job', exact=True)).to_have_attribute('aria-pressed', 'false')
             undo_detail.get_by_role('button', name='Mark job as applied', exact=True).click()
@@ -323,7 +334,7 @@ try:
             page.reload()
             expect(card(history_id)).to_be_visible()
             expect(card(history_id).get_by_role('button', name='Save job', exact=True)).to_be_visible()
-            expect(card(history_id).get_by_role('button', name='Mark job as applied', exact=True)).to_be_visible()
+            expect(card(history_id).get_by_role('button', name='Mark job as applied', exact=True)).to_have_count(0)
             undo_history = conn.execute('SELECT interaction_type FROM job_interactions WHERE canonical_job_id=%s ORDER BY id', (history_id,)).fetchall()
             assert [row['interaction_type'] for row in undo_history] == ['save', 'applied', 'unsave', 'unapplied', 'save', 'unsave', 'applied', 'unapplied']
             assert history_id not in [entry.details.job.id for entry in db.behavior_history(conn, candidate['id'])]
