@@ -24,7 +24,7 @@ CORE_FIELDS = tuple(CanonicalJob.model_fields)
 
 def connect(database_url=None):
     load_dotenv(ROOT / '.env', override=False)
-    database_url = database_url or os.environ.get('DATABASE_URL')
+    database_url = (database_url or os.environ.get('DATABASE_URL') or '').strip()
     if not database_url:
         raise RuntimeError('DATABASE_URL is required. Configure .env or run python -m internshipfeed.dev_db.')
     return psycopg.connect(database_url, row_factory=dict_row, autocommit=True, connect_timeout=5)

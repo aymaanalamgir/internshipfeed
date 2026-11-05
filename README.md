@@ -451,9 +451,12 @@ credentials, environments, cached dependencies, generated builds, and runtime da
    settings in the service configuration. Configure a reachable hosted PostgreSQL
    `DATABASE_URL` for the intended environment; local Compose/socket URLs cannot
    work on Vercel. Use a separate preview/demo database for this single-profile app.
-2. Initialize that database with `python -m internshipfeed.db` and populate it using
-   the existing ingestion command or external cron. API startup also applies pending
-   migrations. Keep credentials in environment settings, never deployment JSON.
+2. With `DATABASE_URL` pointing at the hosted database, run
+   `python -m internshipfeed.db`, then `python -m internshipfeed --enrich-limit 20`
+   from an external machine. This loads both sources and limits initial description
+   fetching to 20 jobs; omit the limit for full enrichment. API startup applies
+   migrations but does not scrape jobs: `/api/health` can return 200 while feeds are
+   empty. Keep credentials in environment settings, never deployment JSON.
 3. Use **Python 3.12** (pinned in `.python-version`) with a matching virtualenv for
    Vercel's current Python runtime; an existing Python 3.9 local-app environment
    cannot run the current Vercel dev runtime. Run `npx vercel@latest dev` from the
@@ -475,6 +478,25 @@ or Vercel Cron. Run ingestion/daily email externally against the hosted database
 configure Resend settings on that worker. [Vercel Services](https://vercel.com/docs/services),
 [routing](https://vercel.com/docs/services/routing), and
 [bindings](https://vercel.com/docs/services/bindings) describe the platform contracts.
+
+### Neon connection
+
+Neon supplies pooled and direct URLs. The current startup/ingestion code uses
+session-level advisory locks, so use the **direct/unpooled URL as `DATABASE_URL`**.
+The local setup retains the pooled URL as `DATABASE_URL_POOLED` and the direct
+original as `DATABASE_URL_UNPOOLED`. Future `neon env pull` calls may restore the
+pooled default; reselect the direct URL before running this app's migrations/workers.
+
+For Vercel's **Import .env**, use the private `data/neon/vercel.env` generated during
+setup. It contains only the deployment `DATABASE_URL`; credentials and the `.neon`
+project context are ignored by Git. Restart the app after changing its environment.
+Paste URLs on one line without surrounding quotes or whitespace. Runtime errors
+such as `invalid sslmode value: "require\n"` indicate a trailing newline in Vercel's
+value; edit the environment variable and redeploy. The connection loader also trims
+accidental surrounding whitespace.
+Codex's project-scoped Neon MCP configuration lives in `.codex/config.toml` and
+uses OAuth; restart Codex to load it and sign in if prompted. Local database settings
+were preserved under `data/backups/neon-setup/`.
 
 ## Verification
 
