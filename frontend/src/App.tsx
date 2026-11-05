@@ -10,12 +10,14 @@ import { ListingsPage } from './pages/ListingsPage';
 import { useJobActions } from './hooks/useJobActions';
 import { invalidateJobs, queryKeys, sourcesQuery } from './lib/queries';
 import { viewForPath } from './lib/navigation';
+import { emptyFilters } from './lib/listings';
 
 export default function App() {
   const [path, setPath] = useState(window.location.pathname);
   const view = viewForPath(path);
   const [profileOpen, setProfileOpen] = useState(window.location.pathname.replace(/\/$/, '') === '/profile');
   const [jobId, setJobId] = useState<number | null>(null);
+  const [listingFilters, setListingFilters] = useState(emptyFilters);
   const client = useQueryClient();
   const { data: sources = [] } = useQuery(sourcesQuery());
   const workflow = useJobActions();
@@ -37,7 +39,7 @@ export default function App() {
   const refresh = () => { void invalidateJobs(client); void client.invalidateQueries({ queryKey: queryKeys.sources }); };
   return <><a className="skip-link" href="#main-content">Skip to main content</a>
     <TopNav current={view} profileOpen={profileOpen} onProfile={() => setProfileOpen(true)} onNavigate={navigate} />
-    {view === 'listings' ? <ListingsPage workflow={workflow} sources={sources} onUpdated={refresh} onOpenJob={setJobId} />
+    {view === 'listings' ? <ListingsPage workflow={workflow} sources={sources} filters={listingFilters} onFiltersChange={setListingFilters} onUpdated={refresh} onOpenJob={setJobId} />
       : <JobCollectionPage key={view} view={view} workflow={workflow} onOpenJob={setJobId} onOpenProfile={() => setProfileOpen(true)} />}
     <p className="sr-only" role="status">{workflow.announcement}</p>
     {profileOpen && <ProfileDrawer onClose={closeProfile} />}

@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { viewForPath } from './navigation';
-import { emptyFilters, filterListings } from './listings';
+import { emptyFilters, normalizeFilters } from './listings';
 import { emptyInteraction } from './workflow';
 import { SkillTag } from '../components/SkillTag';
 import { JobActions } from '../components/JobActions';
@@ -30,22 +30,10 @@ test('navigation exposes five destinations and Profile as a dialog control', () 
   assert.match(html, /aria-haspopup="dialog"/);
   assert.doesNotMatch(html, /href="\/profile"/);
 });
-test('directory search covers company, technical skills, and source titles', () => {
-  for (const query of ['acme', ' FASTAPI ', 'Python', 'Software Intern']) assert.deepEqual(filterListings([listing], { ...emptyFilters(), query }), [listing]);
-  assert.deepEqual(filterListings([listing], { ...emptyFilters(), query: 'missing' }), []);
-});
-test('directory filters compose and do not invent unavailable metadata', () => {
-  assert.deepEqual(filterListings([listing], { query: 'python', location: 'Toronto', term: 'Summer 2027', source: '2', status: 'open' }), [listing]);
-  for (const [field, value] of Object.entries({ location: 'Ottawa', term: 'Winter 2027', source: '1', status: 'unknown' }))
-    assert.deepEqual(filterListings([listing], { ...emptyFilters(), [field]: value }), []);
-});
-test('closed source observations do not satisfy active source filters', () => {
-  const closed = { ...listing, sources: [{ ...listing.sources[0], status: 'closed' as const }] };
-  assert.deepEqual(filterListings([closed], { ...emptyFilters(), source: '2' }), []);
-});
-test('directory preserves server order without ranking', () => {
-  const entries = [{ ...listing, job: { ...listing.job, id: 9 } }, listing];
-  assert.deepEqual(filterListings(entries, emptyFilters()), entries);
+test('directory filters normalize search without changing exact metadata selections', () => {
+  assert.deepEqual(normalizeFilters({ query: ' PYTHON ', location: 'Toronto', term: 'Summer 2027', source: '2', status: 'open' }),
+    { query: 'python', location: 'Toronto', term: 'Summer 2027', source: '2', status: 'open' });
+  assert.deepEqual(normalizeFilters(emptyFilters()), emptyFilters());
 });
 test('SkillTag uses one escaped label and an accessible optional remove control', () => {
   const plain = renderToStaticMarkup(createElement(SkillTag, { label: '<script>Python</script>' }));

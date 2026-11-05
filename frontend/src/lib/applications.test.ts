@@ -32,7 +32,7 @@ test('Applied status filters are sent to the backend', async () => {
   const fetch = mock.method(globalThis, 'fetch', async () => new Response('[]'));
   try {
     await getAppliedJobs(undefined, 'rejected'); await getAppliedJobs();
-    assert.deepEqual(fetch.mock.calls.map(call => call.arguments[0]), ['/api/applied?status=rejected', '/api/applied']);
+    assert.deepEqual(fetch.mock.calls.map(call => call.arguments[0]), ['/api/applied?limit=50&offset=0&status=rejected', '/api/applied?limit=50&offset=0']);
   } finally { fetch.mock.restore(); }
 });
 test('status controls are limited to Applied and use the original application date', () => {

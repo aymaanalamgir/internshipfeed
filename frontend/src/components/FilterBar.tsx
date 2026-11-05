@@ -1,9 +1,9 @@
 // Expose search and metadata filters for the neutral job directory.
-import type { JobDetails, JobSource } from '../types/jobs';
+import type { JobSource, ListingFilterOptions } from '../types/jobs';
 import type { ListingFilters } from '../lib/listings';
-export function FilterBar({ jobs, sources, filters, onChange }: { jobs: JobDetails[]; sources: JobSource[]; filters: ListingFilters; onChange: (filters: ListingFilters) => void }) {
-  const locations = [...new Set(jobs.map(item => item.job.location))].sort();
-  const terms = [...new Set(jobs.map(item => item.term).filter((term): term is string => Boolean(term)))].sort();
+export function FilterBar({ options, sources, filters, onChange }: { options: ListingFilterOptions; sources: JobSource[]; filters: ListingFilters; onChange: (filters: ListingFilters) => void }) {
+  const locations = [...new Set([...options.locations, ...(filters.location ? [filters.location] : [])])].sort();
+  const terms = [...new Set([...options.terms, ...(filters.term ? [filters.term] : [])])].sort();
   const change = (key: keyof ListingFilters, value: string) => onChange({ ...filters, [key]: value });
   return <div className="filter-bar" role="search" aria-label="Filter listings">
     <label className="search-control"><span className="sr-only">Search listings</span><input id="search" type="search" value={filters.query} maxLength={200}

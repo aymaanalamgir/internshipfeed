@@ -129,7 +129,8 @@ class DatabaseTests(unittest.TestCase):
         self.save(second)
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             for path in ('/api/feed', '/api/recommendations'):
-                self.assertEqual(client.get(path).json()[0]['job']['posted_at'], '2026-11-01')
+                payload = client.get(path).json()
+                self.assertEqual((payload['items'] if path == '/api/feed' else payload)[0]['job']['posted_at'], '2026-11-01')
             self.assertEqual(client.get('/api/jobs/%s/details' % canonical.id).json()['job']['posted_at'], '2026-11-01')
 
     def test_new_job_email_uses_discovery_ids_independent_of_upstream_posting_date(self):
@@ -195,7 +196,7 @@ class DatabaseTests(unittest.TestCase):
         with patch("internshipfeed.api.FRONTEND_ENTRY", self.frontend_entry()), patch("internshipfeed.api.db.connect", side_effect=self.connect), TestClient(app) as client:
             response = client.get("/api/jobs")
             self.assertEqual(response.status_code, 200)
-            data = response.json()
+            data = response.json()['items']
             self.assertEqual(len(data), 1)
             detail = client.get("/api/jobs/%s" % data[0]["id"]).json()
             expected_fields = {"id", "company", "title", "location", "application_url", "posted_at", "status"}
@@ -206,10 +207,10 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(set(context["job"]), expected_fields)
             self.assertEqual(context["description"], self.job.description)
             self.assertEqual(context["keywords"]["frameworks"], ["React"])
-            self.assertEqual(client.get("/api/feed").json()[0]["job"], detail)
-            self.assertEqual(client.get("/api/jobs?status=closed").json(), [])
-            self.assertEqual(len(client.get("/api/jobs?q=react").json()), 1)
-            self.assertEqual(client.get("/api/jobs?q=%25").json(), [])
+            self.assertEqual(client.get("/api/feed").json()['items'][0]["job"], detail)
+            self.assertEqual(client.get("/api/jobs?status=closed").json()['items'], [])
+            self.assertEqual(len(client.get("/api/jobs?q=react").json()['items']), 1)
+            self.assertEqual(client.get("/api/jobs?q=%25").json()['items'], [])
             self.assertEqual(client.get("/api/jobs?status=invalid").status_code, 422)
             self.assertEqual(client.get("/api/jobs/999999").status_code, 404)
             self.assertEqual(client.get("/api/health").status_code, 200)
@@ -1092,7 +1093,7 @@ class DatabaseTests(unittest.TestCase):
                 for action in ('save', 'applied'):
                     client.post('/api/jobs/%s/interactions' % history, json={'type': action})
             self.assertEqual(client.get('/api/recommendations').json(), ranked)
-            self.assertEqual([row['job']['id'] for row in client.get('/api/feed').json()], [frontend, backend])
+            self.assertEqual([row['job']['id'] for row in client.get('/api/feed').json()['items']], [frontend, backend])
             for path in ('/api/saved', '/api/applied'):
                 self.assertEqual(client.get(path).json()[0]['job']['id'], history)
                 self.assertNotIn('final_score', client.get(path).json()[0])
@@ -1188,7 +1189,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(db.behavior_history(self.conn, candidate)[0].interaction_types, frozenset({'save', 'applied'}))
             client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'unapplied'})
             self.assertEqual(client.get('/api/recommendations').json(), [])
-            self.assertEqual(client.get('/api/feed').json()[0]['job']['id'], job_id)
+            self.assertEqual(client.get('/api/feed').json()['items'][0]['job']['id'], job_id)
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             self.assertEqual(client.get('/api/dismissed').json(), [])
             self.assertFalse(client.get('/api/interactions').json()[0]['dismissed'])
@@ -1262,14 +1263,14 @@ class DatabaseTests(unittest.TestCase):
             client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'save'})
             self.assertEqual(client.get('/api/recommendations').json(), [])
             self.assertEqual(len(client.get('/api/saved').json()), 1)
-            self.assertEqual(len(client.get('/api/feed').json()), 1)
-            self.assertEqual(len(client.get('/api/jobs').json()), 1)
+            self.assertEqual(len(client.get('/api/feed').json()['items']), 1)
+            self.assertEqual(len(client.get('/api/jobs').json()['items']), 1)
             self.assertEqual(db.candidate_job_details(self.conn, candidate), [])
             applied = client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'applied'}).json()['interaction_state']
             self.assertTrue(applied['saved'] and applied['applied'])
             self.assertEqual(len(client.get('/api/saved').json()), 1)
             self.assertEqual(len(client.get('/api/applied').json()), 1)
-            self.assertEqual(client.get('/api/feed').json(), [])
+            self.assertEqual(client.get('/api/feed').json()['items'], [])
             self.assertEqual([row['interaction_type'] for row in self.conn.execute('SELECT * FROM job_interactions ORDER BY id')], ['click', 'save', 'applied'])
 
     def test_save_and_applied_reversals_restore_collections_and_survive_refresh(self):
@@ -1460,8 +1461,8 @@ class DatabaseTests(unittest.TestCase):
             applied = client.get('/api/applied').json()
             self.assertEqual([profile_fit(row) for row in applied], [profile_fit(row) for row in before])
             self.assertEqual(client.get('/api/saved').json(), [])
-            self.assertEqual(client.get('/api/jobs').json(), [])
-            self.assertEqual(client.get('/api/feed').json(), [])
+            self.assertEqual(client.get('/api/jobs').json()['items'], [])
+            self.assertEqual(client.get('/api/feed').json()['items'], [])
             self.assertTrue(client.get('/api/interactions').json()[0]['dismissed'])
         self.assertEqual(self.conn.execute('SELECT * FROM canonical_jobs').fetchall(), before_jobs)
 
@@ -1502,8 +1503,8 @@ class DatabaseTests(unittest.TestCase):
             self.assertTrue(members('/api/saved')[c]['interaction_state']['applied'])
             act(b, 'dismiss')
             self.assertEqual(set(members('/api/recommendations')), set())
-            self.assertEqual({row['id'] for row in client.get('/api/jobs').json()}, {a})
-            self.assertEqual({row['job']['id'] for row in client.get('/api/feed').json()}, {a})
+            self.assertEqual({row['id'] for row in client.get('/api/jobs').json()['items']}, {a})
+            self.assertEqual({row['job']['id'] for row in client.get('/api/feed').json()['items']}, {a})
             for row in list(members('/api/saved').values()) + list(members('/api/applied').values()):
                 for field in ('score', 'role_score', 'skills_score', 'location_score', 'term_score', 'reasons', 'matched_skills'):
                     self.assertEqual(row[field], before[row['job']['id']][field])

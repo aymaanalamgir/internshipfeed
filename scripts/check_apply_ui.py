@@ -151,7 +151,7 @@ try:
                 expect(card(first)).to_have_count(0)
                 assert events(first)[-1] == 'save'
                 assert first not in [row['job']['id'] for row in page.request.get(base + '/api/recommendations').json()]
-                assert first in [row['job']['id'] for row in page.request.get(base + '/api/feed').json()]
+                assert first in [row['job']['id'] for row in page.request.get(base + '/api/feed').json()['items']]
                 page.reload()
                 expect(card(first)).to_have_count(0)
                 page.get_by_role('link', name='Saved', exact=True).click()

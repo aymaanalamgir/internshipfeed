@@ -266,9 +266,9 @@ focus, and reduced-motion support are shared requirements.
 
 One [query client](frontend/src/lib/queries.ts) keeps data fresh for **45 seconds**,
 retains inactive queries for **5 minutes**, retries once, and disables window-focus
-refetching. Stable keys separate development-candidate collections, Applied status
+refetching. Stable keys separate current-session collections, Applied status
 filters, directory data, job IDs, profile, résumé metadata/suggestions, and sources.
-Directory filters remain local. Cache is in memory for the current page session.
+Directory filters run in PostgreSQL. Cache is in memory for the current page session.
 
 A shared subtle spinner appears only without loaded data. Cached lists/forms/details
 remain visible during background refresh and failures, with secondary refresh/retry
@@ -294,7 +294,11 @@ on cards and shown as unavailable in details. Discovery timestamps never substit
 
 Profile and job details open in drawers over the current tab. `/profile` opens
 Profile over Recommended; `/feed` aliases All listings. Shared components display
-server scores/order, progressively rendering 24 cards or 40 directory rows.
+server scores/order. **Show more** requests the next server page: 50 directory rows,
+30 recommendations, or 50 history cards. Previously loaded pages stay visible while
+loading/retrying; tab returns restore cached pages and directory filters. Search is
+debounced 300 ms; dropdown changes apply immediately and reset the cursor. Query
+keys include normalized filters; consumed abort signals cancel stale requests.
 
 Cards retain one **% match** value (Recommended uses the existing final score) and
 a short evidence summary. **Why this job?** expands matched roles, skills,
@@ -367,9 +371,10 @@ FastAPI's **`/docs`** is the full request/response reference. Core surfaces:
 
 | Method/path | Contract |
 | --- | --- |
-| `GET /api/jobs`, `/api/feed` | Candidate-visible canonical jobs or detail envelopes; `q`, `source`, `source_id`, `status` filters. |
+| `GET /api/jobs`, `/api/feed` | Cursor-paginated canonical jobs or lightweight summaries; `limit=50` (1–100), `cursor`, `q`, `source`/`source_id`, `location`, `term`, `status`. Invalid limits/cursors return 422. |
+| `GET /api/feed/filters` | Candidate-visible location/term options across the eligible catalog, independent of loaded pages. Source options still use `/api/sources`. |
 | `GET /api/jobs/{id}`, `/api/jobs/{id}/details` | Single job/detail, resolving merged IDs. |
-| `GET /api/recommendations`, `/api/saved`, `/api/applied`, `/api/dismissed` | Scored collections with SQL-derived state, term, and keywords; Recommended accepts `min_score=0..100`; Applied includes `application` metadata and accepts a status filter. |
+| `GET /api/recommendations`, `/api/saved`, `/api/applied`, `/api/dismissed` | Bounded arrays with `limit=1..100`, `offset>=0`; defaults 30 for Recommended, 50 for history. Recommended accepts `min_score=0..100`; Applied includes application metadata and accepts a status filter. Technical tags are capped; full requirements stay in details. |
 | `GET /api/session` | Establish the anonymous cookie; returns only `anonymous`/`created` metadata. |
 | `GET /api/profile`, `PUT /api/profile` | Current-session profile; PUT requires all five fields, rejects extra fields, and returns persisted values. |
 | `POST /api/resumes` | Multipart `file` upload; HTTP 201 with résumé metadata and extracted text. |
@@ -383,6 +388,71 @@ FastAPI's **`/docs`** is the full request/response reference. Core surfaces:
 | `GET /api/health` | Database connectivity. |
 | `GET /api/ingestion-status` | Persisted last successful ingestion time, latest batch, and server-authorized manual-sync capability. |
 | `GET /api/cron/ingest` | Bearer `CRON_SECRET`; synchronous production ingestion summary. Busy returns 200; failed/partial ingestion returns 503 with committed work retained. |
+
+### Paginated reads
+
+`GET /api/feed?limit=50&q=python&location=Toronto` returns:
+
+```json
+{
+  "items": [],
+  "limit": 50,
+  "total": 0,
+  "has_more": false,
+  "next_cursor": null
+}
+```
+
+Each item contains `{job, term, skills, interaction_state}`: the seven-field
+canonical job, up to six technical tags, and only this candidate's effective state.
+`/api/jobs` uses the same envelope with canonical jobs as items. Descriptions,
+requirements, and provenance load only through `/api/jobs/{id}/details` when opened.
+The former array-shaped directory responses were replaced; clients must read `items`.
+
+Directory cursors encode the last `(posted_at, id)`, ordered **posted_at DESC NULLS
+LAST, id DESC**. Dated cursors include earlier dates/tied lower IDs and the undated
+tail; undated cursors advance by lower IDs only. Keyset pagination fits the existing
+sort index and handles new arrivals without shifting an offset. Exact totals omit
+the cursor predicate; an exhausted cursor returns empty items and `has_more=false`.
+Counts/pages may reflect intervening ingestion or user actions; no browsing-session
+snapshot is held.
+
+The directory executes two SQL statements: the filtered count and a bounded page
+(one extra row establishes `has_more`). SQL performs eligibility, literal `ILIKE`
+search over canonical/source text and canonical keyword values, source/status/
+location/term filtering, state joins, ordering, and pagination. The page projection
+omits raw postings, lineage, descriptions, and requirements. Filter options use a
+separate aggregate query, cached in the browser. There are no per-job SQL calls.
+
+Existing `canonical_jobs_posted_idx`, mapping primary/unique keys, source identity,
+and candidate-event indexes suffice; measured plans required no new indexes or
+extensions. Leading-wildcard search is scanned at this scale; consider `pg_trgm`
+only if measured search latency becomes a bottleneck.
+
+Recommended still ranks the entire SQL-eligible set with the unchanged engine,
+then slices the requested results. History keeps its existing candidate-scoped
+selection and scoring, then slices; these collections use simple offsets because
+the personalized ordering is computed in Python and history is usually small.
+`useInfiniteQuery` caches each collection's pages and requests more only on demand;
+an exact full last page may require one empty request to discover the end. Discovery
+eligibility and private response headers/cookies remain in force. Ingestion, cron,
+and persisted canonical data are independent of read pagination.
+
+Measured on disposable local PostgreSQL with the current global Neon catalog
+(6,970 canonical / 2,611 eligible jobs), local FastAPI TestClient, three warm samples:
+
+| Read | Before bytes / median API ms | After bytes / median API ms |
+| --- | ---: | ---: |
+| Directory → first 50 | 3,711,657 / 196.41 | 24,993 / 6.16 |
+| Directory tenth page | — | 25,067 / 6.02 |
+| Software + Toronto, ON filter | — | 11,754 / 14.92 |
+| Canonical list → first 50 | 776,760 / 179.16 | 13,876 / 5.94 |
+| Recommended → top 30 | 2,296,952 / 896.60 | 28,451 / 747.38 |
+
+Directory DB-fetch/model-building median fell from **174.90 to 3.34 ms**. The top
+30 recommendations retained identical scores/order. Existing-index plans measured
+2.241 ms for the exact count and 0.282 ms for the page. These are local measurements,
+excluding production connection/network latency; no production performance claim.
 
 Candidate-specific reads/writes resolve ownership from the cookie, never from
 payload/query user IDs. Profile, interaction, application, and résumé writes are
@@ -580,16 +650,18 @@ were preserved under `data/backups/neon-setup/`.
 ## Verification
 
 ```sh
-python scripts/test_with_existing_postgres.py  # Isolated schemas on configured server
+python scripts/test_with_postgres.py  # Disposable local PostgreSQL; requires local-postgres extra
 npm --prefix frontend test
 npm --prefix frontend run build
 # Optional browser dependency; supply your Chromium executable if needed.
 python -m pip install -e '.[browser]'
 python -m playwright install chromium
+python scripts/check_browser_with_postgres.py  # Full browser suite on disposable PostgreSQL
 python scripts/check_recommendations_ui.py --browser-executable /path/to/chromium
 python scripts/check_apply_ui.py --browser-executable /path/to/chromium
 python scripts/check_cache_ui.py  # Bundled Chromium; isolated cache/loading/date checks
 python scripts/check_sessions_ui.py  # Independent A/B browsers; isolated profiles/actions/resumes
+TEST_DATABASE_URL=... python scripts/check_pagination_ui.py  # Disposable database only; pages/filter/cache/network checks
 python scripts/check_daily_email.py --browser-executable /path/to/chromium
 ```
 

@@ -1,6 +1,7 @@
 """Browser checks for the React directory and shared job-details drawer."""
 import argparse
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from playwright.sync_api import expect, sync_playwright
 
 parser = argparse.ArgumentParser()
@@ -18,30 +19,33 @@ with sync_playwright() as playwright:
     expect(page.get_by_role('heading', name='All listings', exact=True)).to_be_visible()
     page.wait_for_function("document.querySelector('#summary').textContent.includes(' of ')")
     page.wait_for_function("document.querySelector('#source').options.length > 1")
-    entries = page.request.get(base + '/api/feed').json()
-    canonical = page.request.get(base + '/api/jobs').json()
+    payload = page.request.get(base + '/api/feed').json()
+    summaries = payload['items']
+    entries = [page.request.get(base + '/api/jobs/%s/details' % item['job']['id']).json() for item in summaries]
+    canonical = page.request.get(base + '/api/jobs').json()['items']
     assert all(set(job) == {'id', 'company', 'title', 'location', 'application_url', 'posted_at', 'status'} for job in canonical)
     sources = page.request.get(base + '/api/sources').json()
     count = len(entries)
-    expect(page.locator('.listing-row')).to_have_count(min(count, 40))
+    expect(page.locator('.listing-row')).to_have_count(min(count, 50))
     assert count > 0 and not any(entry['job']['status'] in {'closed', 'dead'} for entry in entries)
     for source in sources:
         page.select_option('#source', str(source['id']))
         expected = sum(any(row['source_id'] == source['id'] and row['status'] not in {'closed', 'dead'} for row in entry['sources']) for entry in entries)
-        expect(page.locator('.listing-row')).to_have_count(min(expected, 40))
+        expect(page.locator('.listing-row')).to_have_count(min(expected, 50))
     page.select_option('#source', '')
     page.select_option('#status', 'open')
-    expect(page.locator('.listing-row')).to_have_count(min(sum(entry['job']['status'] == 'open' for entry in entries), 40))
+    expect(page.locator('.listing-row')).to_have_count(min(sum(entry['job']['status'] == 'open' for entry in entries), 50))
     page.select_option('#status', '')
     sample = next((entry for entry in entries if entry['description'] and any(entry['keywords'].values())), entries[0])
     page.get_by_label('Location', exact=True).select_option(sample['job']['location'])
-    expect(page.locator('.listing-row')).to_have_count(min(sum(entry['job']['location'] == sample['job']['location'] for entry in entries), 40))
+    expect(page.locator('.listing-row')).to_have_count(min(sum(entry['job']['location'] == sample['job']['location'] for entry in entries), 50))
     page.get_by_label('Location', exact=True).select_option('')
     if sample['term']:
         page.get_by_label('Term', exact=True).select_option(sample['term'])
-        expect(page.locator('.listing-row')).to_have_count(min(sum(entry['term'] == sample['term'] for entry in entries), 40))
+        expect(page.locator('.listing-row')).to_have_count(min(sum(entry['term'] == sample['term'] for entry in entries), 50))
         page.get_by_label('Term', exact=True).select_option('')
-    page.fill('#search', sample['job']['title'])
+    with page.expect_response(lambda response: urlsplit(response.url).path == '/api/feed' and parse_qs(urlsplit(response.url).query).get('q') == [sample['job']['title'].lower()]):
+        page.fill('#search', sample['job']['title'])
     title = page.get_by_role('button', name=sample['job']['title'], exact=True).first
     detail_path = '**/api/jobs/%s/details' % sample['job']['id']
     page.route(detail_path, lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
@@ -73,7 +77,7 @@ with sync_playwright() as playwright:
     expect(page.get_by_text('No listings match these filters.', exact=True)).to_be_visible()
     page.fill('#search', '')
     page.get_by_role('button', name='Refresh data', exact=True).click()
-    expect(page.locator('.listing-row')).to_have_count(min(count, 40))
+    expect(page.locator('.listing-row')).to_have_count(min(count, 50))
     page.screenshot(path=str(screenshots / 'listings-desktop.png'), full_page=True)
     page.set_viewport_size({'width': 390, 'height': 844})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -97,12 +101,12 @@ with sync_playwright() as playwright:
     expect(page.locator('#sync-status')).to_contain_text('Last updated', timeout=10000)
     expect(page.locator('#sync-jobs')).to_be_enabled()
     visible_before = page.locator('.listing-row').count()
-    page.route('**/api/feed', lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
+    page.route('**/api/feed?*', lambda route: route.fulfill(status=503, json={'detail': 'private diagnostics'}))
     page.get_by_role('button', name='Refresh data', exact=True).click()
     expect(page.get_by_role('alert')).to_contain_text('Could not refresh. Showing previously loaded data.')
     expect(page.locator('.listing-row')).to_have_count(visible_before)
     expect(page.locator('.loading-state')).to_have_count(0)
-    page.unroute('**/api/feed')
+    page.unroute('**/api/feed?*')
     page.get_by_role('button', name='Try again', exact=True).click()
     expect(page.locator('.listing-row').first).to_be_visible()
     page.unroute('**/api/ingestion-status')

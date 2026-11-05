@@ -14,7 +14,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from . import applications
-from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, JobInteractionState, JobKeywords, JobListing, SourceJobReference
+from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, JobInteractionState, JobKeywords, JobListing, JobListItem, JobListPage, SourceJobReference
+from .pagination import decode_cursor, encode_cursor
 from .reconciliation import RECONCILIATION_LOCK, backfill, canonicalize_url, link_posting, reconcile, refresh_canonical, root_id
 from .sources import SOURCES, get_source
 
@@ -183,6 +184,108 @@ SOURCE_SELECT = """SELECT p.*, p.application_url AS url, s.repository AS source,
                    m.match_method, m.match_confidence, m.matched_url
                    FROM source_postings p JOIN job_sources s ON s.id=p.source_id
                    LEFT JOIN canonical_job_sources m ON m.source_posting_id=p.id"""
+DETAIL_SOURCE_SELECT = """SELECT p.id, s.repository AS source, p.source_id, p.external_id,
+    m.canonical_job_id, m.match_method, m.match_confidence, m.matched_url,
+    p.company, p.title, p.location, p.application_url AS url, p.last_known_url,
+    p.posted_at, p.term, p.status, p.snapshot_id, p.source_line, p.first_seen_at, p.last_seen_at
+    FROM source_postings p JOIN job_sources s ON s.id=p.source_id
+    JOIN canonical_job_sources m ON m.source_posting_id=p.id"""
+
+
+def _catalog_predicates(status=None, query=None, source=None, source_id=None, include_inactive=False, include_unlinked=False):
+    clauses, params = ['i.merged_into_id IS NULL'], []
+    if not include_inactive:
+        clauses.append("c.status NOT IN ('closed','dead')")
+    if not include_unlinked:
+        clauses.append('EXISTS (SELECT 1 FROM canonical_job_sources m WHERE m.canonical_job_id=c.id)')
+    if status:
+        clauses.append('c.status=%s'); params.append(status)
+    if source or source_id is not None:
+        member = ['m.canonical_job_id=c.id']
+        if not include_inactive:
+            member.append("p.status NOT IN ('closed','dead')")
+        if source:
+            member.append('s.repository=%s'); params.append(source)
+        if source_id is not None:
+            member.append('p.source_id=%s'); params.append(source_id)
+        clauses.append('EXISTS (SELECT 1 FROM canonical_job_sources m JOIN source_postings p ON p.id=m.source_posting_id '
+                       'JOIN job_sources s ON s.id=p.source_id WHERE ' + ' AND '.join(member) + ')')
+    if query and query.strip():
+        pattern = '%' + query.strip().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+        clauses.append("""(concat_ws(' ',c.company,c.title,c.location) ILIKE %s
+            OR EXISTS (SELECT 1 FROM jsonb_each(c.keywords) k
+                CROSS JOIN LATERAL jsonb_array_elements_text(k.value) v(value) WHERE v.value ILIKE %s)
+            OR EXISTS (SELECT 1 FROM canonical_job_sources m JOIN source_postings p ON p.id=m.source_posting_id
+                WHERE m.canonical_job_id=c.id AND concat_ws(' ',p.company,p.title,p.location,p.term) ILIKE %s))""")
+        params += [pattern] * 3
+    return clauses, params
+
+
+PRIMARY_TERM_JOIN = """JOIN LATERAL (
+    SELECT p.term FROM canonical_job_sources m JOIN source_postings p ON p.id=m.source_posting_id
+    WHERE m.canonical_job_id=c.id
+    ORDER BY CASE p.status WHEN 'open' THEN 0 WHEN 'unknown' THEN 1 WHEN 'closed' THEN 2 ELSE 3 END,
+             p.posted_at IS NULL, p.id LIMIT 1
+) primary_posting ON true"""
+
+
+def _directory_query(profile_id, status=None, query=None, source=None, source_id=None, location=None, term=None):
+    clauses, params = _catalog_predicates(status, query, source, source_id)
+    clauses += ['NOT COALESCE(state.dismissed,false)', 'NOT COALESCE(state.applied,false)']
+    if location:
+        clauses.append('c.location=%s'); params.append(location)
+    if term:
+        clauses.append('primary_posting.term=%s'); params.append(term)
+    prefix = RESOLVED_INTERACTIONS + ', candidate_state AS (' + INTERACTION_SUMMARY + ') '
+    relation = """FROM canonical_jobs c JOIN canonical_job_identities i ON i.id=c.id
+        LEFT JOIN candidate_state state ON state.job_id=c.id """
+    if term:
+        relation += PRIMARY_TERM_JOIN + ' '
+    return prefix, relation, clauses, [profile_id, profile_id] + params
+
+
+def list_job_summaries(conn, profile_id, limit=50, cursor=None, **filters):
+    if not 1 <= limit <= 100:
+        raise ValueError('Limit must be between 1 and 100')
+    after = decode_cursor(cursor)
+    prefix, relation, clauses, params = _directory_query(profile_id, **filters)
+    total = conn.execute(prefix + 'SELECT count(*) AS total ' + relation + ' WHERE ' + ' AND '.join(clauses), params).fetchone()['total']
+    page_clauses, page_params = list(clauses), list(params)
+    if after:
+        posted_at, job_id = after
+        if posted_at is None:
+            page_clauses.append('(c.posted_at IS NULL AND c.id < %s)'); page_params.append(job_id)
+        else:
+            page_clauses.append('((c.posted_at,c.id) < (%s,%s) OR c.posted_at IS NULL)')
+            page_params += [posted_at, job_id]
+    if not filters.get('term'):
+        relation += PRIMARY_TERM_JOIN + ' '
+    state_columns = ', '.join('state.' + field for field in JobInteractionState.model_fields if field != 'job_id')
+    statement = prefix + """SELECT """ + ', '.join('c.' + field for field in CORE_FIELDS) + ", primary_posting.term, " + state_columns + """,
+        ARRAY(SELECT value FROM jsonb_array_elements_text(
+            COALESCE(c.keywords->'languages','[]'::jsonb) || COALESCE(c.keywords->'frameworks','[]'::jsonb) ||
+            COALESCE(c.keywords->'tools_and_platforms','[]'::jsonb)) WITH ORDINALITY AS tags(value, position)
+            GROUP BY value ORDER BY min(position) LIMIT 6) AS skills
+        """ + relation + ' WHERE ' + ' AND '.join(page_clauses) + ' ORDER BY c.posted_at DESC NULLS LAST, c.id DESC LIMIT %s'
+    rows = conn.execute(statement, page_params + [limit + 1]).fetchall()
+    more = len(rows) > limit
+    items = []
+    for row in rows[:limit]:
+        state = {field: row[field] for field in JobInteractionState.model_fields if field != 'job_id' and row[field] is not None}
+        state.update(job_id=row['id'], saved=bool(row['saved']), dismissed=bool(row['dismissed']), applied=bool(row['applied']))
+        items.append(JobListItem(job=_core(row), term=row['term'], skills=row['skills'], interaction_state=JobInteractionState(**state)))
+    last = rows[limit - 1] if more else None
+    return JobListPage(items=items, total=total, limit=limit, has_more=more,
+                       next_cursor=encode_cursor(last['posted_at'], last['id']) if last else None)
+
+
+def listing_filter_options(conn, profile_id):
+    prefix, relation, clauses, params = _directory_query(profile_id)
+    return conn.execute(prefix + """SELECT
+        COALESCE(array_agg(DISTINCT c.location ORDER BY c.location),'{}') AS locations,
+        COALESCE(array_agg(DISTINCT primary_posting.term ORDER BY primary_posting.term)
+                 FILTER (WHERE primary_posting.term IS NOT NULL AND primary_posting.term<>''),'{}') AS terms
+        """ + relation + PRIMARY_TERM_JOIN + ' WHERE ' + ' AND '.join(clauses), params).fetchone()
 
 
 def _source_job(row):
@@ -272,34 +375,23 @@ def list_job_details(conn, status=None, query=None, include_inactive=False, sour
                      job_ids=None, exclude_job_ids=None, include_unlinked=False):
     if job_ids is not None and not job_ids:
         return []
-    clauses, params = ['i.merged_into_id IS NULL'], []
+    clauses, params = _catalog_predicates(status, query, source, source_id, include_inactive, include_unlinked)
     if job_ids is not None:
         clauses.append('c.id=ANY(%s)'); params.append(job_ids)
     if exclude_job_ids:
         clauses.append('NOT (c.id=ANY(%s))'); params.append(exclude_job_ids)
     with conn.transaction():
-        canonical = conn.execute('SELECT c.* FROM canonical_jobs c JOIN canonical_job_identities i ON i.id=c.id WHERE ' + ' AND '.join(clauses), params).fetchall()
+        canonical = conn.execute('SELECT ' + ', '.join('c.' + field for field in CORE_FIELDS) + ', c.description, c.keywords FROM canonical_jobs c JOIN canonical_job_identities i ON i.id=c.id WHERE ' + ' AND '.join(clauses), params).fetchall()
         if not canonical:
             return []
-        observations = conn.execute(SOURCE_SELECT + ' WHERE m.canonical_job_id=ANY(%s) ORDER BY p.id',
+        observations = conn.execute(DETAIL_SOURCE_SELECT + ' WHERE m.canonical_job_id=ANY(%s) ORDER BY p.id',
                                     ([row['id'] for row in canonical],)).fetchall()
     groups = {}
     for row in observations:
         groups.setdefault(row['canonical_job_id'], []).append(row)
     result = []
     for stored in canonical:
-        if (not include_inactive and stored['status'] in {'closed', 'dead'}) or (status and stored['status'] != status):
-            continue
         members = groups.get(stored['id'], [])
-        eligible = members if include_inactive else [item for item in members if item['status'] not in {'closed', 'dead'}]
-        if not members and not include_unlinked:
-            continue
-        if source and not any(item['source'] == source for item in eligible):
-            continue
-        if source_id is not None and not any(item['source_id'] == source_id for item in eligible):
-            continue
-        if query and query.casefold() not in ' '.join(str(item.get(field) or '') for item in members for field in ('company', 'title', 'location', 'term', 'keywords')).casefold():
-            continue
         result.append(_job_details(stored, members))
     result.sort(key=lambda item: (item.job.posted_at is not None, item.job.posted_at.toordinal() if item.job.posted_at else 0, item.job.id), reverse=True)
     return result
@@ -343,7 +435,7 @@ def get_job_details(conn, job_id):
     if job is None:
         return None
     stored = conn.execute('SELECT * FROM canonical_jobs WHERE id=%s', (job.id,)).fetchone()
-    members = conn.execute(SOURCE_SELECT + ' WHERE m.canonical_job_id=%s ORDER BY p.id', (job.id,)).fetchall()
+    members = conn.execute(DETAIL_SOURCE_SELECT + ' WHERE m.canonical_job_id=%s ORDER BY p.id', (job.id,)).fetchall()
     return _job_details(stored, members)
 
 
@@ -465,10 +557,7 @@ RESOLVED_INTERACTIONS = INTERACTION_LINEAGE + """, events AS (
 ) """
 
 
-def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
-    # Latest explicit action per family wins, including across merged identities.
-    # Event IDs order writes; timestamps can tie or precede a waiting transaction.
-    return conn.execute(RESOLVED_INTERACTIONS + """SELECT s.job_id,
+INTERACTION_SUMMARY = """SELECT s.job_id,
            bool_or(s.interaction_type='save') AS saved,
            bool_or(s.interaction_type='dismiss') AS dismissed,
            bool_or(s.interaction_type='applied') AS applied,
@@ -481,7 +570,13 @@ def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
         SELECT job_id, max(created_at) AS last_interaction_at, max(id) AS last_event_id
         FROM events GROUP BY job_id
     ) h ON h.job_id=s.job_id
-    GROUP BY s.job_id, h.last_interaction_at, h.last_event_id ORDER BY s.job_id""", (profile_id, profile_id)).fetchall()
+    GROUP BY s.job_id, h.last_interaction_at, h.last_event_id"""
+
+
+def interaction_states(conn: psycopg.Connection, profile_id: int) -> list:
+    # Latest explicit action per family wins, including across merged identities.
+    # Event IDs order writes; timestamps can tie or precede a waiting transaction.
+    return conn.execute(RESOLVED_INTERACTIONS + INTERACTION_SUMMARY + ' ORDER BY s.job_id', (profile_id, profile_id)).fetchall()
 
 
 def behavior_history(conn, profile_id):

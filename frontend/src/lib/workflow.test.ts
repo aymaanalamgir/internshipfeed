@@ -107,7 +107,7 @@ test('each collection uses its backend product-state endpoint', async () => {
   const fetch = mock.method(globalThis, 'fetch', async () => new Response('[]', { status: 200 }));
   try {
     await getRecommendations(); await getSavedJobs(); await getAppliedJobs(); await getDismissedJobs();
-    assert.deepEqual(fetch.mock.calls.map(call => call.arguments[0]), ['/api/recommendations', '/api/saved', '/api/applied', '/api/dismissed']);
+    assert.deepEqual(fetch.mock.calls.map(call => call.arguments[0]), ['/api/recommendations?limit=30&offset=0', '/api/saved?limit=50&offset=0', '/api/applied?limit=50&offset=0', '/api/dismissed?limit=50&offset=0']);
   } finally { fetch.mock.restore(); }
 });
 

@@ -207,6 +207,38 @@ class JobInteractionState(BaseModel):
     last_event_id: int = Field(default=0, ge=0)
 
 
+class JobListItem(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    job: CanonicalJob
+    term: Optional[str]
+    skills: List[str] = Field(max_length=6)
+    interaction_state: JobInteractionState
+
+
+class JobListPage(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    items: List[JobListItem] = Field(max_length=100)
+    limit: int = Field(ge=1, le=100)
+    total: int = Field(ge=0)
+    has_more: bool
+    next_cursor: Optional[str]
+
+
+class CanonicalJobPage(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    items: List[CanonicalJob] = Field(max_length=100)
+    limit: int = Field(ge=1, le=100)
+    total: int = Field(ge=0)
+    has_more: bool
+    next_cursor: Optional[str]
+
+
+class ListingFilterOptions(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    locations: List[str]
+    terms: List[str]
+
+
 class InteractionReceipt(JobInteraction):
     interaction_state: JobInteractionState
 

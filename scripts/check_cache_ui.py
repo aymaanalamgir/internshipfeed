@@ -141,9 +141,10 @@ try:
 
                 modes['/api/profile'] = 'hold'
                 page.get_by_role('button', name='Profile', exact=True).click()
-                expect(page.locator('.loading-state')).to_have_text('Loading profile…')
-                release('/api/profile')
                 profile = page.get_by_role('dialog', name='Profile', exact=True)
+                expect(profile.get_by_role('form', name='Candidate profile')).to_be_visible()
+                expect(profile.get_by_text('Loading profile…', exact=True)).to_have_count(0)
+                release('/api/profile')
                 expect(profile.get_by_role('form', name='Candidate profile')).to_be_visible()
                 profile.get_by_role('button', name='Close profile', exact=True).click()
                 profile_requests = counts['/api/profile']

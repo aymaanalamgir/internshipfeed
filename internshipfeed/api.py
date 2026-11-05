@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from . import applications, db, sessions
 from .models import (ApplicationStatus, ApplicationUpdate, AppliedJobView, JobApplication, CandidateJobView, CandidateProfile, CandidateProfileUpdate, CanonicalJob,
                      InteractionReceipt, InteractionRequest, JobDetails, JobInteractionState, RecommendedJobView, Resume, ResumeMetadata, ResumeSkillSuggestions)
+from .models import CanonicalJobPage, JobKeywords, JobListPage, ListingFilterOptions
 from .matching import score_job
 from .behavioral import build_behavior_profile
 from .recommendations import rank_recommendations
@@ -81,20 +82,39 @@ def sources(conn=Depends(connection)):
     return db.source_directory(conn)
 
 
-@app.get("/api/jobs", response_model=List[CanonicalJob])
-def jobs(status: Optional[Literal["open", "closed", "unknown"]] = None,
-         q: Optional[str] = Query(default=None, max_length=200),
-         source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection), candidate=Depends(current_candidate)):
-    profile = candidate
-    return [details.job for details, _ in db.candidate_job_details(conn, profile['id'], 'listings', status=status, query=q, source=source, source_id=source_id)]
+def catalog_page(status: Optional[Literal['open', 'closed', 'unknown']] = None,
+                 q: Optional[str] = Query(default=None, max_length=200), source: Optional[str] = Query(default=None, max_length=2048),
+                 source_id: Optional[int] = Query(default=None, gt=0, le=9223372036854775807),
+                 location: Optional[str] = Query(default=None, max_length=1000),
+                 term: Optional[str] = Query(default=None, max_length=200),
+                 limit: int = Query(default=50, ge=1, le=100),
+                 cursor: Optional[str] = Query(default=None, max_length=256),
+                 conn=Depends(connection), candidate=Depends(current_candidate)):
+    if source and source.isdecimal():
+        if not 0 < int(source) <= 9223372036854775807 or (source_id is not None and int(source) != source_id):
+            raise HTTPException(status_code=422, detail='Invalid source filter')
+        source_id, source = int(source), None
+    try:
+        return db.list_job_summaries(conn, candidate['id'], limit=limit, cursor=cursor,
+                                     status=status, query=q, source=source, source_id=source_id,
+                                     location=location, term=term)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
 
 
-@app.get("/api/feed", response_model=List[JobDetails])
-def feed(status: Optional[Literal["open", "closed", "unknown"]] = None,
-         q: Optional[str] = Query(default=None, max_length=200),
-         source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection), candidate=Depends(current_candidate)):
-    profile = candidate
-    return [details for details, _ in db.candidate_job_details(conn, profile['id'], 'listings', status=status, query=q, source=source, source_id=source_id)]
+@app.get('/api/jobs', response_model=CanonicalJobPage)
+def jobs(page=Depends(catalog_page)):
+    return {**page.model_dump(), 'items': [item.job for item in page.items]}
+
+
+@app.get('/api/feed', response_model=JobListPage)
+def feed(page=Depends(catalog_page)):
+    return page
+
+
+@app.get('/api/feed/filters', response_model=ListingFilterOptions)
+def listing_filters(conn=Depends(connection), candidate=Depends(current_candidate)):
+    return db.listing_filter_options(conn, candidate['id'])
 
 
 @app.get("/api/jobs/{job_id}/details", response_model=JobDetails)
@@ -172,7 +192,7 @@ def profile(candidate=Depends(current_candidate)):
     return candidate
 
 
-def _job_collection(conn, candidate, view, min_score=0, application_status=None):
+def _job_collection(conn, candidate, view, min_score=0, application_status=None, limit=50, offset=0):
     profile = CandidateProfile.model_validate(candidate)
     tracked = applications.list_applications(conn, profile.id, application_status) if view == 'applied' else []
     application_by_job = {row['canonical_job_id']: row for row in tracked}
@@ -193,28 +213,34 @@ def _job_collection(conn, candidate, view, min_score=0, application_status=None)
     result_model = RecommendedJobView if view == 'recommended' else AppliedJobView if view == 'applied' else CandidateJobView
     metadata = {item.job.id: item for item in details}
     return [result_model(**match.model_dump(), interaction_state=states[match.job.id],
-                         term=metadata[match.job.id].term, keywords=metadata[match.job.id].keywords,
-                         **({'application': application_by_job[match.job.id]} if view == 'applied' else {})) for match in matches]
+                         term=metadata[match.job.id].term,
+                         keywords=JobKeywords(**{field: getattr(metadata[match.job.id].keywords, field)[:6]
+                                                for field in ('languages', 'frameworks', 'tools_and_platforms')}),
+                         **({'application': application_by_job[match.job.id]} if view == 'applied' else {})) for match in matches[offset:offset + limit]]
 
 
 @app.get("/api/recommendations", response_model=List[RecommendedJobView])
-def recommendations(min_score: int = Query(default=0, ge=0, le=100), conn=Depends(connection), candidate=Depends(current_candidate)):
-    return _job_collection(conn, candidate, 'recommended', min_score)
+def recommendations(min_score: int = Query(default=0, ge=0, le=100), limit: int = Query(default=30, ge=1, le=100),
+                    offset: int = Query(default=0, ge=0), conn=Depends(connection), candidate=Depends(current_candidate)):
+    return _job_collection(conn, candidate, 'recommended', min_score, limit=limit, offset=offset)
 
 
 @app.get("/api/saved", response_model=List[CandidateJobView])
-def saved_jobs(conn=Depends(connection), candidate=Depends(current_candidate)):
-    return _job_collection(conn, candidate, 'saved')
+def saved_jobs(limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0),
+               conn=Depends(connection), candidate=Depends(current_candidate)):
+    return _job_collection(conn, candidate, 'saved', limit=limit, offset=offset)
 
 
 @app.get("/api/applied", response_model=List[AppliedJobView])
-def applied_jobs(status: Optional[ApplicationStatus] = None, conn=Depends(connection), candidate=Depends(current_candidate)):
-    return _job_collection(conn, candidate, 'applied', application_status=status)
+def applied_jobs(status: Optional[ApplicationStatus] = None, limit: int = Query(default=50, ge=1, le=100),
+                 offset: int = Query(default=0, ge=0), conn=Depends(connection), candidate=Depends(current_candidate)):
+    return _job_collection(conn, candidate, 'applied', application_status=status, limit=limit, offset=offset)
 
 
 @app.get("/api/dismissed", response_model=List[CandidateJobView])
-def dismissed_jobs(conn=Depends(connection), candidate=Depends(current_candidate)):
-    return _job_collection(conn, candidate, 'dismissed')
+def dismissed_jobs(limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0),
+                   conn=Depends(connection), candidate=Depends(current_candidate)):
+    return _job_collection(conn, candidate, 'dismissed', limit=limit, offset=offset)
 
 
 @app.put("/api/profile", response_model=CandidateProfile)

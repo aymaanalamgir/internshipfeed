@@ -1,7 +1,7 @@
 // Verify real query definitions retain data through navigation, refresh, failure, and invalidation.
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
-import { QueryObserver } from '@tanstack/react-query';
+import { InfiniteQueryObserver } from '@tanstack/react-query';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { LoadingState } from '../components/LoadingState';
@@ -24,7 +24,7 @@ test('initial loading becomes cached data and revisiting fresh tabs avoids anoth
     calls.push(path);
     return new Promise<Response>(resolve => { release = resolve; });
   });
-  const observer = new QueryObserver(client, collectionQuery('recommended'));
+  const observer = new InfiniteQueryObserver(client, collectionQuery('recommended'));
   const unsubscribe = observer.subscribe(() => {});
   try {
     assert.equal(observer.getCurrentResult().isPending, true);
@@ -33,11 +33,11 @@ test('initial loading becomes cached data and revisiting fresh tabs avoids anoth
     await observer.refetch();
     assert.equal(observer.getCurrentResult().isPending, false);
     unsubscribe();
-    await client.fetchQuery({ ...collectionQuery('saved'), queryFn: async () => [] });
-    const revisited = new QueryObserver(client, collectionQuery('recommended'));
-    assert.deepEqual(revisited.getCurrentResult().data, cached);
-    await client.fetchQuery(collectionQuery('recommended'));
-    assert.deepEqual(calls, ['/api/recommendations']);
+    await client.fetchInfiniteQuery({ ...collectionQuery('saved'), queryFn: async () => [] });
+    const revisited = new InfiniteQueryObserver(client, collectionQuery('recommended'));
+    assert.deepEqual(revisited.getCurrentResult().data, { pages: [cached], pageParams: [0] });
+    await client.fetchInfiniteQuery(collectionQuery('recommended'));
+    assert.deepEqual(calls, ['/api/recommendations?limit=30&offset=0']);
     assert.match(renderToStaticMarkup(createElement(LoadingState)), /role="status".*class="spinner"/);
   } finally { unsubscribe(); fetch.mock.restore(); client.clear(); }
 });
@@ -45,19 +45,20 @@ test('initial loading becomes cached data and revisiting fresh tabs avoids anoth
 test('background refresh and failure preserve previously loaded collection data', async () => {
   const client = createQueryClient();
   const options = { ...collectionQuery('saved'), retry: false };
-  client.setQueryData(options.queryKey, cached);
+  const data = { pages: [cached], pageParams: [0] };
+  client.setQueryData(options.queryKey, data);
   let reject!: (error: Error) => void;
   const fetch = mock.method(globalThis, 'fetch', () => new Promise<Response>((_, fail) => { reject = fail; }));
-  const observer = new QueryObserver(client, options);
+  const observer = new InfiniteQueryObserver(client, options);
   const unsubscribe = observer.subscribe(() => {});
   try {
     const refreshing = observer.refetch();
     assert.equal(observer.getCurrentResult().isFetching, true);
-    assert.deepEqual(observer.getCurrentResult().data, cached);
+    assert.deepEqual(observer.getCurrentResult().data, data);
     reject(new Error('Offline'));
     await refreshing;
     assert.equal(observer.getCurrentResult().isError, true);
-    assert.deepEqual(observer.getCurrentResult().data, cached);
+    assert.deepEqual(observer.getCurrentResult().data, data);
   } finally { unsubscribe(); fetch.mock.restore(); client.clear(); }
 });
 

@@ -104,8 +104,8 @@ class AnonymousSessionTests(unittest.TestCase):
         self.assertEqual(self.b.get('/api/saved').json(),[])
         self.assertEqual(self.a.get('/api/dismissed').json(),[])
         self.assertEqual([row['job']['id'] for row in self.b.get('/api/dismissed').json()],[self.job])
-        self.assertTrue(self.a.get('/api/feed').json())
-        self.assertEqual(self.b.get('/api/feed').json(),[])
+        self.assertTrue(self.a.get('/api/feed').json()['items'])
+        self.assertEqual(self.b.get('/api/feed').json()['items'],[])
         self.assertEqual(self.a.get(f'/api/jobs/{self.job}/details').json(),self.b.get(f'/api/jobs/{self.job}/details').json())
         cookies=self.a.cookies
         with TestClient(app,base_url='https://feed.example',cookies=cookies) as revisited:
