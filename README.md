@@ -1,5 +1,7 @@
 # InternshipFeed
 
+**[Open the hosted app on Vercel](https://internshipfeed.vercel.app)** — no local setup required.
+
 **Problem Statement:** Canadian students are often limited towards co-op portals and LinkedIn when searching for tech internships. These postings tend to be generalized and it may be difficult for students to see which postings would provide a good fit to their strengths and abilities. InternshipFeed aims to provide a personalized feed of postings based on a students previous experiences, strengths, and interests as an applicant.
 
 [Architecture](#architecture) · [Ingestion](#ingestion) · [Database](#database) ·
