@@ -31,7 +31,7 @@ h1 { font-size: 25px; font-weight: 500; letter-spacing: -.6px; margin: 0; line-h
 .recommendation-card { padding: var(--space-6); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .recommendation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-6); }
 .job-information, .listing-title { min-width: 0; }
-.job-company { font-size: 12px; color: var(--text-muted); margin-bottom: var(--space-1); }
+.job-company { font-size: 14px; color: var(--text-muted); margin-bottom: var(--space-1); }
 .job-information h2, .listing-title h2 { font-size: 18px; font-weight: 500; letter-spacing: -.2px; line-height: 1.4; margin-bottom: var(--space-2); }
 .job-title { padding: 0; border: 0; background: none; color: inherit; text-align: left; font: inherit; overflow-wrap: anywhere; }
 .job-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 0; }
