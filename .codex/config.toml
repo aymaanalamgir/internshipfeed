@@ -1,3 +1,0 @@
-# Connect Codex to this Neon project through its OAuth-enabled MCP server.
-[mcp_servers.Neon]
-url = "https://mcp.neon.tech/mcp?projectId=dawn-shadow-11428481"

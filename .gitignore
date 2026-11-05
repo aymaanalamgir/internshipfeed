@@ -5,6 +5,7 @@ __pycache__/
 build/
 .venv/
 .vercel/
+.codex/
 data/
 .env
 .env.*

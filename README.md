@@ -645,9 +645,9 @@ Paste URLs on one line without surrounding quotes or whitespace. Runtime errors
 such as `invalid sslmode value: "require\n"` indicate a trailing newline in Vercel's
 value; edit the environment variable and redeploy. The connection loader also trims
 accidental surrounding whitespace.
-Codex's project-scoped Neon MCP configuration lives in `.codex/config.toml` and
-uses OAuth; restart Codex to load it and sign in if prompted. Local database settings
-were preserved under `data/backups/neon-setup/`.
+Optional local Codex/Neon MCP settings can live in `.codex/config.toml`, which is
+excluded from Git and deployments. Local database settings were preserved under
+`data/backups/neon-setup/`.
 
 ## Verification
 
