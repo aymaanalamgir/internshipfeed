@@ -33,7 +33,13 @@ SIMPLIFY = JobSource(
     readme_url="https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/README.md",
     parse=parse_simplify,
 )
-SOURCES = (CANADIAN, SIMPLIFY)
+SIMPLIFY_OFF_SEASON = JobSource(
+    key="simplify-off-season", name="Simplify Off-Season Internships",
+    url=SIMPLIFY.url,
+    readme_url="https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/README-Off-Season.md",
+    parse=parse_simplify,
+)
+SOURCES = (CANADIAN, SIMPLIFY, SIMPLIFY_OFF_SEASON)
 
 
 def get_source(key):

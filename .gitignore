@@ -13,3 +13,15 @@ node_modules/
 frontend/dist/
 *.tsbuildinfo
 .neon
+
+# Exclude screenshots, editor backups, and disposable tool caches.
+screenshots/
+.DS_Store
+Thumbs.db
+*.bak
+*.orig
+*.swp
+*.swo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

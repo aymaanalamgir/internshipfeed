@@ -76,6 +76,8 @@ try:
         with sync_playwright() as p:
             browser = p.chromium.launch(executable_path=args.browser_executable, headless=True)
             context = browser.new_context(viewport={'width': 1280, 'height': 1000})
+            owner=conn.execute('SELECT user_id FROM candidate_profiles WHERE id=%s',(candidate['id'],)).fetchone()['user_id']
+            context.add_cookies([{'name':'internshipfeed_session','value':str(owner),'url':base,'httpOnly':True,'sameSite':'Lax'}])
             # Exercise real external-tab navigation, with a local response at the
             # reserved fixture URL rather than contacting any employer's website.
             def external(route):

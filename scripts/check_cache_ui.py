@@ -67,6 +67,8 @@ try:
             browser = p.chromium.launch()
             try:
                 page = browser.new_page(viewport={'width': 1280, 'height': 1000}, timezone_id='America/Los_Angeles')
+                owner=conn.execute('SELECT user_id FROM candidate_profiles WHERE id=%s',(candidate,)).fetchone()['user_id']
+                page.context.add_cookies([{'name':'internshipfeed_session','value':str(owner),'url':base,'httpOnly':True,'sameSite':'Lax'}])
                 screenshots = ROOT / 'data' / 'screenshots'
                 screenshots.mkdir(parents=True, exist_ok=True)
                 page.emulate_media(reduced_motion='reduce')
@@ -166,7 +168,7 @@ try:
 
                 tab('All listings')
                 modes['/api/feed'] = 'hold'
-                page.get_by_role('button', name='Refresh', exact=True).click()
+                page.get_by_role('button', name='Refresh data', exact=True).click()
                 expect(page.locator('.refresh-state')).to_have_text('Refreshing…')
                 expect(card(fresh)).to_be_visible()
                 expect(page.locator('.loading-state')).to_have_count(0)

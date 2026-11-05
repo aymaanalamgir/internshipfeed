@@ -14,12 +14,13 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from . import applications
-from .models import CandidateProfileUpdate, CanonicalJob, JobDetails, JobInteractionState, JobKeywords, JobListing, SourceJobReference
+from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, JobInteractionState, JobKeywords, JobListing, SourceJobReference
 from .reconciliation import RECONCILIATION_LOCK, backfill, canonicalize_url, link_posting, reconcile, refresh_canonical, root_id
 from .sources import SOURCES, get_source
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE_FIELDS = tuple(CanonicalJob.model_fields)
+PROFILE_COLUMNS = ', '.join(CandidateProfile.model_fields)
 
 
 def connect(database_url=None):
@@ -91,6 +92,54 @@ def save_snapshot(conn, source_id, raw_content, commit_sha=None):
         raw_content = COALESCE(source_snapshots.raw_content, EXCLUDED.raw_content),
         commit_sha = COALESCE(source_snapshots.commit_sha, EXCLUDED.commit_sha) RETURNING *""",
         (source_id, content_hash, commit_sha, raw_content)).fetchone()
+
+
+def applied_source_snapshot(conn, source_id):
+    return conn.execute("""SELECT r.report, s.id, s.content_hash FROM ingestion_runs r
+        JOIN source_snapshots s ON s.id=r.snapshot_id WHERE r.source_id=%s AND r.status='success'
+        AND r.report->>'incremental_version'='1' ORDER BY r.finished_at DESC LIMIT 1""", (source_id,)).fetchone()
+
+
+def source_observations(conn, source_id):
+    return {row['external_id']: _source_job(row) for row in
+            conn.execute(SOURCE_SELECT + ' WHERE p.source_id=%s', (source_id,)).fetchall()}
+
+
+def touch_source_postings(conn, source_id, snapshot_id, jobs=None):
+    if jobs is None:
+        conn.execute('UPDATE source_postings SET last_seen_at=clock_timestamp() WHERE source_id=%s AND snapshot_id=%s',
+                     (source_id, snapshot_id))
+    elif jobs:
+        conn.execute("""UPDATE source_postings p SET snapshot_id=%s, last_seen_at=clock_timestamp(),
+            raw_company=v.raw_company, raw_title=v.raw_title, raw_location=v.raw_location,
+            raw_url=v.raw_url, raw_posted_at=v.raw_posted_at, raw_row=v.raw_row, source_line=v.source_line
+            FROM jsonb_to_recordset(%s) AS v(external_id text, raw_company text, raw_title text,
+                raw_location text, raw_url text, raw_posted_at text, raw_row text, source_line integer)
+            WHERE p.source_id=%s AND p.external_id=v.external_id""",
+                     (snapshot_id, Jsonb([job.model_dump(mode='json') for job in jobs]), source_id))
+    conn.execute("""UPDATE canonical_jobs c SET last_seen_at=GREATEST(c.last_seen_at,v.seen)
+        FROM (SELECT m.canonical_job_id, max(p.last_seen_at) AS seen FROM source_postings p
+              JOIN canonical_job_sources m ON m.source_posting_id=p.id WHERE p.source_id=%s
+              GROUP BY m.canonical_job_id) v WHERE c.id=v.canonical_job_id""", (source_id,))
+
+
+def close_missing_postings(conn, source_id, external_ids):
+    with conn.transaction():
+        conn.execute('SELECT pg_advisory_xact_lock(%s)', (RECONCILIATION_LOCK,))
+        rows = conn.execute("""UPDATE source_postings SET status='closed'
+            WHERE source_id=%s AND status NOT IN ('closed','dead') AND NOT (external_id=ANY(%s))
+            RETURNING id""", (source_id, list(external_ids))).fetchall()
+        if rows:
+            groups = conn.execute('SELECT DISTINCT canonical_job_id FROM canonical_job_sources WHERE source_posting_id=ANY(%s)',
+                                  ([row['id'] for row in rows],)).fetchall()
+            for group in groups:
+                refresh_canonical(conn, group['canonical_job_id'])
+    return len(rows)
+
+
+def sync_status(conn):
+    success = conn.execute("SELECT finished_at FROM ingestion_batches WHERE status='success' ORDER BY finished_at DESC LIMIT 1").fetchone()
+    return {'latest_run': latest_batch(conn), 'last_successful_at': success['finished_at'] if success else None}
 
 
 def _recover_legacy_content(conn):
@@ -349,17 +398,36 @@ def get_ingestion_run(conn, run_id):
 
 
 def development_profile(conn: psycopg.Connection) -> Optional[dict]:
-    return conn.execute('SELECT * FROM candidate_profiles ORDER BY id LIMIT 1').fetchone()
+    return conn.execute('SELECT ' + PROFILE_COLUMNS + ' FROM candidate_profiles ORDER BY id LIMIT 1').fetchone()
+
+
+def create_anonymous_candidate(conn):
+    with conn.transaction():
+        user_id = conn.execute('INSERT INTO users DEFAULT VALUES RETURNING id').fetchone()['id']
+        candidate = conn.execute('INSERT INTO candidate_profiles (user_id) VALUES (%s) RETURNING ' + PROFILE_COLUMNS,
+                                 (user_id,)).fetchone()
+    return user_id, candidate
+
+
+def candidate_for_user(conn, user_id):
+    return conn.execute("""WITH seen AS (
+        UPDATE users SET last_seen_at=clock_timestamp()
+        WHERE id=%s AND last_seen_at < clock_timestamp() - interval '15 minutes' RETURNING id
+    ) SELECT """ + PROFILE_COLUMNS + ' FROM candidate_profiles WHERE user_id=%s', (user_id, user_id)).fetchone()
+
+
+def update_candidate_profile(conn, profile_id, update):
+    return conn.execute("""UPDATE candidate_profiles SET
+        target_roles=%s, skills=%s, preferred_locations=%s, preferred_terms=%s, graduation_year=%s
+        WHERE id=%s RETURNING """ + PROFILE_COLUMNS, (update.target_roles, update.skills, update.preferred_locations,
+                            update.preferred_terms, update.graduation_year, profile_id)).fetchone()
 
 
 def update_development_profile(conn: psycopg.Connection, update: CandidateProfileUpdate) -> Optional[dict]:
     # psycopg adapts these Python lists to PostgreSQL text arrays, including [].
     # The existing trigger alone owns updated_at; identity/created_at are untouched.
-    return conn.execute("""UPDATE candidate_profiles SET
-        target_roles=%s, skills=%s, preferred_locations=%s, preferred_terms=%s, graduation_year=%s
-        WHERE id=(SELECT id FROM candidate_profiles ORDER BY id LIMIT 1)
-        RETURNING *""", (update.target_roles, update.skills, update.preferred_locations,
-                          update.preferred_terms, update.graduation_year)).fetchone()
+    profile = development_profile(conn)
+    return update_candidate_profile(conn, profile['id'], update) if profile else None
 
 
 def record_interaction(conn, profile_id, canonical_id, interaction_type):

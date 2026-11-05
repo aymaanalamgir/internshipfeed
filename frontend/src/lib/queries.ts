@@ -1,4 +1,4 @@
-// Share query policies, development-candidate keys, and server-data invalidation.
+// Keep candidate queries in each browser's current-session cache and share invalidation policies.
 import { QueryClient, queryOptions } from '@tanstack/react-query';
 import { getJobDetails, getListings, getSources } from '../api/jobs';
 import { getInteractionStates } from '../api/interactions';
@@ -11,15 +11,15 @@ export const createQueryClient = () => new QueryClient({ defaultOptions: { queri
   staleTime: 45_000, gcTime: 5 * 60_000, refetchOnWindowFocus: false, retry: 1,
 } } });
 
-// The API currently serves one development candidate; authenticated keys must use that candidate's ID.
+// Each page owns its QueryClient; the API resolves its HttpOnly session without client-supplied IDs.
 export const queryKeys = {
-  jobs: ['jobs', 'development'] as const,
-  collection: (view: JobView, status: ApplicationStatus | '' = '') => ['jobs', 'development', view, view === 'applied' ? status : ''] as const,
-  listings: ['jobs', 'development', 'listings'] as const,
-  details: (id: number) => ['jobs', 'development', 'details', id] as const,
-  profile: ['profile', 'development'] as const,
-  resume: ['resume', 'development', 'latest'] as const,
-  suggestions: (id: number | null) => ['resume', 'development', 'skills', id] as const,
+  jobs: ['jobs', 'current-session'] as const,
+  collection: (view: JobView, status: ApplicationStatus | '' = '') => ['jobs', 'current-session', view, view === 'applied' ? status : ''] as const,
+  listings: ['jobs', 'current-session', 'listings'] as const,
+  details: (id: number) => ['jobs', 'current-session', 'details', id] as const,
+  profile: ['profile', 'current-session'] as const,
+  resume: ['resume', 'current-session', 'latest'] as const,
+  suggestions: (id: number | null) => ['resume', 'current-session', 'skills', id] as const,
   sources: ['sources'] as const,
 };
 

@@ -1,10 +1,12 @@
-// Start ingestion, poll batch progress, and refresh listings after completion.
+// Show persisted ingestion freshness and allow source sync only when the API authorizes it.
 import { useEffect, useRef, useState } from 'react';
-import { getLatestSync, updateListings } from '../api/jobs';
-import type { SyncRun } from '../types/jobs';
+import { getIngestionStatus, updateListings } from '../api/jobs';
+import type { IngestionStatus, SyncRun } from '../types/jobs';
+import { syncLabel } from '../lib/ingestion';
 import { Icon } from './Icon';
 
 export function SyncControl({ onUpdated }: { onUpdated: () => void }) {
+  const [status, setStatus] = useState<IngestionStatus | null>(null);
   const [run, setRun] = useState<SyncRun | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState('');
@@ -13,19 +15,15 @@ export function SyncControl({ onUpdated }: { onUpdated: () => void }) {
   const running = run?.status === 'running';
   useEffect(() => {
     const controller = new AbortController();
-    getLatestSync(controller.signal).then(value => { if (!controller.signal.aborted) setRun(value); }).catch(() => {});
-    return () => controller.abort();
-  }, []);
-  useEffect(() => {
-    if (!running) return;
-    const controller = new AbortController();
-    const timer = window.setInterval(() => {
-      getLatestSync(controller.signal).then(value => {
-        if (controller.signal.aborted || !value) return;
-        setRun(value); setError('');
-        if (value.status !== 'running') updated.current();
-      }).catch(() => { if (!controller.signal.aborted) setError('Waiting for listing updates…'); });
-    }, 2000);
+    function refresh() {
+      getIngestionStatus(controller.signal).then(value => {
+        if (controller.signal.aborted) return;
+        setStatus(value); setRun(value.latest_run); setError('');
+        if (running && value.latest_run?.status !== 'running') updated.current();
+      }).catch(() => { if (!controller.signal.aborted) setError('Sync status unavailable.'); });
+    }
+    refresh();
+    const timer = window.setInterval(refresh, running ? 2000 : 60000);
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [running]);
   async function start() {
@@ -34,8 +32,10 @@ export function SyncControl({ onUpdated }: { onUpdated: () => void }) {
     catch { setError('Could not update listings. Please try again.'); }
     finally { setStarting(false); }
   }
-  return <div className="sync-control"><button id="sync-jobs" className="text-button" disabled={starting || running} onClick={() => void start()}>
-    <Icon name="refresh" />{starting || running ? 'Updating…' : 'Update listings'}</button>
-    <span className="sync-status" id="sync-status" role="status">{error || (running ? 'Updating listings…' : run ? run.status === 'success' ? 'Listings updated.' : 'Some listings could not be updated.' : '')}</span>
+  return <div className="sync-control">
+    {status?.manual_sync_allowed && <button id="sync-jobs" className="text-button" disabled={starting || running} onClick={() => void start()}>
+      <Icon name="refresh" />{starting || running ? 'Updating…' : 'Update listings'}</button>}
+    <span className="sync-status" id="sync-status" role="status">{error || (running ? 'Updating listings…' : status ? syncLabel(status.last_successful_at) : 'Loading sync status…')}</span>
+    {status && !status.manual_sync_allowed && <span className="sync-status">{status.scheduled_sync_configured ? 'Automatic daily source sync' : 'Automatic sync needs server configuration.'}</span>}
   </div>;
 }

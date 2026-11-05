@@ -18,10 +18,10 @@
 
 ```mermaid
 flowchart TB
-    sources["GitHub sources<br/>Canadian Tech + Simplify"]
-    sources --> ingest["Python ingestion<br/>Fetch → parse → normalize<br/>Snapshots + deterministic enrichment"]
+    sources["GitHub sources<br/>Canadian Tech + Simplify Main + Off-Season"]
+    sources --> ingest["Python ingestion<br/>Fetch → hash → parse → normalize<br/>Incremental persistence + bounded enrichment"]
     ingest --> reconcile["URL reconciliation<br/>Preserve source IDs; merge canonical jobs"]
-    reconcile --> db[("PostgreSQL · source of truth<br/>Source provenance + ingestion reports<br/>Canonical jobs + URL aliases + JSONB keywords<br/>Profiles + résumés + interactions<br/>Applications + notification ledger")]
+    reconcile --> db[("Neon PostgreSQL · source of truth<br/>Source provenance + ingestion reports<br/>Canonical jobs + URL aliases + JSONB keywords<br/>Users → profiles + résumés + interactions<br/>Applications + notification ledger")]
 
     pdf["Résumé PDF"] --> skills["pdfplumber + skill suggestions<br/>User review → explicit profile Save"]
     skills --> db
@@ -29,12 +29,15 @@ flowchart TB
     db --> rank["Shared recommendation engine<br/>Eligible jobs + profile + activity<br/>75% profile fit / 25% behavior"]
     rank --> api["FastAPI<br/>Feeds, details, profile, interactions<br/>Application status + filtering"]
     db -->|"Directory + saved / applied / dismissed"| api
-    api <-->|"REST"| cache["TanStack Query<br/>45 s fresh / 5 min cache retention"]
+    api --> session["Current candidate resolver<br/>HttpOnly opaque cookie → PostgreSQL user/profile"]
+    session --> db
+    api <-->|"Same-origin REST + cookie"| cache["Browser-local TanStack Query<br/>45 s fresh / 5 min cache retention"]
     cache <--> ui["React + TypeScript / Vite<br/>Recommended · All listings · Applied<br/>Saved · Dismissed · Profile<br/>Apply confirmation + status tracking"]
     api -->|"Reversible events + application updates"| db
 
-    cron["Host cron · daily_refresh"] --> ingest
-    cron --> digest["Batch’s new canonical IDs<br/>Eligible, ranked, unnotified<br/>Default: final score ≥ 60 / top 5"]
+    cron["Vercel Cron · daily 05:00 UTC"] --> secure["GET /api/cron/ingest<br/>Bearer CRON_SECRET · inline invocation"]
+    secure --> ingest
+    optional["Optional downstream daily_refresh<br/>Consume a committed batch"] --> digest["Batch’s new canonical IDs<br/>Eligible, ranked, unnotified<br/>Default: final score ≥ 60 / top 5"]
     rank --> digest
     digest --> email["Resend digest<br/>HTML + plain text"]
     email -->|"Record after provider acceptance"| db
@@ -66,10 +69,11 @@ share persistence, eligibility, and ranking logic.
 | --- | --- | --- |
 | `canadian-tech` | [Canadian Tech Internships](https://github.com/negarprh/Canadian-Tech-Internships-2027) | `main/README.md`; Markdown tables, inherited company names, badges, dates, closed markers. |
 | `simplify` | [SimplifyJobs Summer 2027](https://github.com/SimplifyJobs/Summer2027-Internships) | `dev/README.md`; category HTML tables, location details, companion IDs, document terms. Includes international jobs. |
+| `simplify-off-season` | Same Simplify repository | `dev/README-Off-Season.md`; same `parse_simplify`, including per-row terms and archived tables with an omitted Term heading. |
 
 `job_sources` configures each dataset; the registry binds its key to a parser.
 Python `urllib` fetches source files; Markdown rules and `HTMLParser` parse them.
-Both emit `SourceJobRecord` → `normalize()` → `JobListing`, preserving source
+All emit `SourceJobRecord` → `normalize()` → `JobListing`, preserving source
 identity, raw cells, job fields, term/status, snapshot, and enrichment results.
 Relative ages such as `2d` stay raw; missing exact dates remain null.
 
@@ -86,10 +90,12 @@ IDs independently of upstream dates. Existing posting-date indexes cover this fi
 - **Within source:** upsert by `(source_id, external_id)`.
 - **Across sources:** compare normalized application URLs, removing known tracking/transport differences while preserving job IDs, path case, and meaningful hash routes. Missing URLs, generic careers pages, and similar titles do not establish a match.
 - **Evidence:** mappings record `exact_application_url`, `resolved_application_url`, or `source_identity`, confidence, and matched URL. Confidence describes the rule decision, not a probability. ATS-specific/fuzzy matching is not implemented.
-- **Enrichment:** respect robots.txt; extract JSON-LD or readable job HTML, then apply explicit technology and requirement-section rules. Blocked/JavaScript-only pages may lack descriptions. Successful descriptions and recent dead-link checks are reused for 24 hours.
-- **Visibility:** closed/dead jobs are excluded from discovery. An active observation can keep a job visible when another source closes it; disappearance alone does not prove closure. Temporary fetch failures do not prove a dead link.
+- **Enrichment:** commit new/changed metadata before reading application pages; respect robots.txt and extract JSON-LD/readable HTML with deterministic keyword rules. Unchanged jobs retain descriptions/keywords/resolved URLs without daily page fetches. Explicitly closed jobs are never enriched. `--refresh-descriptions` forces a deliberate backfill; blocked/JavaScript-only pages may remain incomplete.
+- **Visibility:** closed/dead jobs are excluded from discovery. An active observation can keep a job visible when another source closes it; absence from a fully parsed/validated successful source snapshot closes that source posting. Fetch/parse/validation/storage failures suppress missing-posting closure; history is retained. Temporary fetch failures do not prove a dead link.
 
 HTTP limits: **20 s timeout, 5 MB responses, two transient-error retries**.
+Source hashes are compared against the last **successfully applied** incremental snapshot, never merely the last download. Identical hashes record successful no-change runs and skip parsing/enrichment. Changed sources normalize every row; unchanged observations update lineage/last-seen metadata in bulk, while material changes use normal reconciliation. Failed/partial snapshots are retried.
+
 Posting/mapping/canonical changes commit atomically; row/source failures preserve
 other work. Advisory locks serialize sync/reconciliation. Batch and source reports
 count fetched, parsed, inserted, updated, skipped, and failed records, with separate
@@ -118,7 +124,8 @@ jobs, grouping languages, frameworks, tools/platforms, concepts, and requirement
 | `canonical_job_sources` | Canonical ↔ source-posting mapping, method/confidence/URL evidence; one current assignment per posting. |
 | `canonical_job_identities`, `canonical_job_urls` | Stable identity allocation, merge redirects, and URL aliases; historical IDs continue resolving to the surviving job. |
 | `ingestion_batches`, `ingestion_runs` | Overall sync progress and per-source execution status/counts, timing, snapshot, errors, and diagnostic reports. Batch reports retain exact new canonical IDs. |
-| `candidate_profiles` | `target_roles`, `skills`, `preferred_locations`, `preferred_terms` as `text[]`; nullable integer `graduation_year`; created/updated timestamps. |
+| `users` | Anonymous UUID identity; database-generated created/last-seen timestamps. |
+| `candidate_profiles` | Unique, required `user_id` FK to `users`; `target_roles`, `skills`, `preferred_locations`, `preferred_terms` as `text[]`; nullable integer `graduation_year`; created/updated timestamps. |
 | `resumes` | Candidate ID, filename, extracted text, upload time. Uploads append versions; raw PDF files are not retained. |
 | `job_interactions` | Append-only candidate/job/type/time behavior events; effective Saved/Applied/Dismissed flags remain derived. |
 | `job_applications` | Current application status and submission/update timestamps; unique `(candidate_profile_id, canonical_job_id)`, checked statuses, candidate/job foreign keys. |
@@ -128,6 +135,37 @@ jobs, grouping languages, frameworks, tools/platforms, concepts, and requirement
 repeatable initialization preserves IDs/events. Snapshots retain dataset versions;
 postings retain their latest observation. Unrecoverable legacy content and unverified
 commit SHAs stay null. PostgreSQL is authoritative; `data/` holds diagnostics.
+
+### Anonymous identity and ownership
+
+Source datasets, canonical jobs, and ingestion remain **global**. Each anonymous
+`users` row owns one `candidate_profiles` row; interactions, applications, résumés,
+and notifications retain their existing candidate foreign keys and indexes. The
+user primary key and unique profile owner supply the required indexes.
+
+`GET /api/session` resolves a server-generated UUID cookie or atomically creates a
+new user and blank profile. The cookie is **HttpOnly, host-only, SameSite=Lax,
+Path=/, 180 days**, and Secure on Vercel deployments. Unknown/malformed cookies
+receive fresh server-generated identities. Durable identity and state live in Neon;
+there is no in-memory session store, account/password/OAuth service, or browser
+profile-ID authorization. Last-seen writes are throttled to once per 15 minutes.
+
+React establishes the session once before mounting parallel data queries, then
+sends same-origin cookies. Each page owns its QueryClient; API responses use
+`private, no-store` and `Vary: Cookie`. Recommendations combine shared jobs with
+only that candidate's preferences/history. User writes check Origin/Fetch Metadata;
+Vercel proxy host/protocol headers are trusted only in the Vercel environment.
+Source sync retains its local/admin guard, and cron still requires `CRON_SECRET`.
+
+[Migration 015](internshipfeed/migrations/015_anonymous_users.sql) assigns every
+existing profile a generated owner without changing profile IDs/timestamps or
+child history. The legacy seed remains available to internal/local tools and the
+optional single-candidate email command; it is never assigned to public visitors.
+New visitors start blank. Anonymous users receive no automatic multi-user email.
+
+**Identity is browser-specific:** refreshes/reopens retain state while the cookie
+exists. Clearing it, using incognito, or using another device creates a separate
+profile. There is no account recovery or cross-device synchronization in this slice.
 
 ### Application tracking and indexes
 
@@ -323,7 +361,8 @@ FastAPI's **`/docs`** is the full request/response reference. Core surfaces:
 | `GET /api/jobs`, `/api/feed` | Candidate-visible canonical jobs or detail envelopes; `q`, `source`, `source_id`, `status` filters. |
 | `GET /api/jobs/{id}`, `/api/jobs/{id}/details` | Single job/detail, resolving merged IDs. |
 | `GET /api/recommendations`, `/api/saved`, `/api/applied`, `/api/dismissed` | Scored collections with SQL-derived state, term, and keywords; Recommended accepts `min_score=0..100`; Applied includes `application` metadata and accepts a status filter. |
-| `GET /api/profile`, `PUT /api/profile` | Development profile; PUT requires all five fields, rejects extra fields, and returns persisted values. |
+| `GET /api/session` | Establish the anonymous cookie; returns only `anonymous`/`created` metadata. |
+| `GET /api/profile`, `PUT /api/profile` | Current-session profile; PUT requires all five fields, rejects extra fields, and returns persisted values. |
 | `POST /api/resumes` | Multipart `file` upload; HTTP 201 with résumé metadata and extracted text. |
 | `GET /api/resumes/latest`, `/api/resumes/{id}/skill-suggestions` | Candidate-scoped metadata or `{resume_id, skills, aliases}`; no raw text. |
 | `GET /api/interactions` | Effective candidate/job state; jobs without events default to false flags. |
@@ -333,16 +372,22 @@ FastAPI's **`/docs`** is the full request/response reference. Core surfaces:
 | `GET /api/sources`, `/api/ingestion-batches/latest`, `/api/ingestion-batches/{uuid}` | Source configuration and overall progress. |
 | `GET /api/ingestion-runs`, `/api/ingestion-runs/latest`, `/api/ingestion-runs/{uuid}` | Per-source execution records; list accepts `source_id`. |
 | `GET /api/health` | Database connectivity. |
+| `GET /api/ingestion-status` | Persisted last successful ingestion time, latest batch, and server-authorized manual-sync capability. |
+| `GET /api/cron/ingest` | Bearer `CRON_SECRET`; synchronous production ingestion summary. Busy returns 200; failed/partial ingestion returns 503 with committed work retained. |
 
-The lowest-ID candidate is the development profile; reads never reseed it.
-Writes require loopback clients and a matching supplied Origin. Errors: invalid
-input **422**, missing resource **404**, unavailable storage/profile **503**, PDF
-format/size **415/413**. Multi-user authentication remains a production gap.
+Candidate-specific reads/writes resolve ownership from the cookie, never from
+payload/query user IDs. Profile, interaction, application, and résumé writes are
+available on Vercel with same-origin protection; manual source sync stays restricted.
+Sources and individual job details are global. Errors: invalid input **422**, missing
+or unowned resource **404**, unavailable storage **503**, cross-origin write **403**,
+and PDF format/size **415/413**.
 
 ## Daily email
 
-External cron runs `python -m internshipfeed.daily_refresh`; FastAPI does not
-schedule jobs. The command refreshes all enabled sources and compares canonical
+Vercel Cron invokes ingestion directly; **email is optional and downstream**.
+`python -m internshipfeed.daily_refresh` can ingest then notify, or consume a
+committed cron batch with `--no-ingest --batch-id BATCH_UUID`. It validates email
+configuration only after ingestion commits. The pipeline compares canonical
 identities before/after ingestion under the sync lock. Exact surviving new IDs are
 stored in the batch report; updates and source duplicates are excluded. Neither
 `posted_at` nor inherited `first_seen_at` determines discovery.
@@ -377,18 +422,14 @@ python -m internshipfeed.daily_refresh --no-ingest --batch-id BATCH_UUID --dry-r
 records notifications; credentials are not required. `--no-enrich` and
 `--enrich-limit N` control job-page fetching. Fresh runs do not replay prior unsent
 batches. Empty matches send nothing. Partial ingestion may email successful
-results but exits 1; full/provider failure exits 1, preserving committed ingestion.
-Provider failure writes no ledger rows. Configuration errors exit 2; success/no
-matches exit 0. Daily-command locks prevent overlap; no implicit send retry occurs.
+results but exits 1; a full ingestion failure exits 1. Missing email settings yield
+`notification_status=skipped_unconfigured`; provider/ledger failures yield
+`failed`/`record_failed`, without changing `ingestion_status` or its exit code.
+Provider failure writes no ledger rows. Success/no matches exit 0. Daily-command locks prevent overlap; no implicit send retry occurs.
 
-```cron
-0 9 * * * cd /absolute/path/to/internshipfeed && /absolute/path/to/internshipfeed/.venv/bin/python -m internshipfeed.daily_refresh >> /absolute/path/to/internshipfeed/data/daily-refresh.log 2>&1
-```
-
-Replace/quote paths and create the log directory before installing the entry.
-This means **09:00 in the cron host's timezone**; DST changes elapsed intervals.
-The host/database must stay awake. [Cron template](scripts/daily_refresh.cron.example)
-is not installed automatically; Compose provides PostgreSQL only.
+The [host crontab example](scripts/daily_refresh.cron.example) is an optional
+external email workflow, not the production ingestion schedule. It is not installed
+automatically. The Vercel cron never requires Resend settings.
 
 ## Run locally
 
@@ -450,10 +491,10 @@ credentials, environments, cached dependencies, generated builds, and runtime da
 1. Create/import one Vercel project with repository root **`.`**; leave build
    settings in the service configuration. Configure a reachable hosted PostgreSQL
    `DATABASE_URL` for the intended environment; local Compose/socket URLs cannot
-   work on Vercel. Use a separate preview/demo database for this single-profile app.
+   work on Vercel. Use a separate preview database to isolate test data from production.
 2. With `DATABASE_URL` pointing at the hosted database, run
    `python -m internshipfeed.db`, then `python -m internshipfeed --enrich-limit 20`
-   from an external machine. This loads both sources and limits initial description
+   from an external machine. This loads all three sources and limits initial description
    fetching to 20 jobs; omit the limit for full enrichment. API startup applies
    migrations but does not scrape jobs: `/api/health` can return 200 while feeds are
    empty. Keep credentials in environment settings, never deployment JSON.
@@ -466,18 +507,47 @@ credentials, environments, cached dependencies, generated builds, and runtime da
 4. After confirming service names/exposure, link/import the project and create a
    preview deployment; promote it only after checking the hosted database and access.
 
-**Current scope:** the existing mutation guard remains local-only. Hosted profile
-saves, résumé uploads, interactions, application updates, and manual sync need an
-explicit authenticated-write design before they work remotely; this configuration
-does not remove that guard. Public API reads include the development profile and
-résumé metadata, so use demo data or restrict access through Deployment Protection.
-`vercel dev` validates the forwarded public origin while retaining the loopback
-client check; preview/production writes remain blocked even behind loopback proxies.
-Ingestion's daemon thread and the host cron are not migrated to serverless workers
-or Vercel Cron. Run ingestion/daily email externally against the hosted database;
-configure Resend settings on that worker. [Vercel Services](https://vercel.com/docs/services),
-[routing](https://vercel.com/docs/services/routing), and
-[bindings](https://vercel.com/docs/services/bindings) describe the platform contracts.
+### Production cron and refresh
+
+Required Vercel **Production** environment settings:
+
+| Variable | Value |
+| --- | --- |
+| `DATABASE_URL` | The existing **Neon direct/unpooled PostgreSQL URL**; shared by web API and cron. No separate cron database. |
+| `CRON_SECRET` | A generated server-only secret; Vercel sends `Authorization: Bearer <secret>`. Never use `VITE_*` or commit it. |
+
+Deploy [vercel.json](vercel.json) to activate `GET /api/cron/ingest` at
+`0 5 * * *`: **05:00 UTC = 00:00 EST**; during daylight saving this is 01:00 EDT.
+Cron timing is approximate on Hobby. The `app` service sets `maxDuration=300`;
+[scheduled_ingestion.py](internshipfeed/scheduled_ingestion.py) uses a 240-second
+work budget and at most five enrichment attempts. Metadata commits first; if work
+exceeds the budget, the run reports failure/partial failure and the next invocation
+reprocesses the uncompleted snapshot, reusing committed rows. Large first loads or
+full description backfills can use the existing CLI against the same Neon URL.
+Deferred descriptions do not block metadata ingestion. Identical source hashes also
+skip pending descriptions; use `--refresh-descriptions` for a deliberate backfill.
+The endpoint performs critical work before returning, without a daemon thread,
+local durable files, email credentials, or another scheduler service. PostgreSQL
+session advisory locks prevent overlapping local/cron invocations; lock contention
+returns `status=busy`. Keep the direct connection while these session locks are used.
+
+Raw snapshots and run reports persist in Neon. CLI/local runs may additionally write
+diagnostic files; cron passes `write_files=False`. Migration
+[014_incremental_ingestion.sql](internshipfeed/migrations/014_incremental_ingestion.sql)
+registers Off-Season for existing databases, once. Distinct file paths remain distinct
+sources, and URL reconciliation preserves their mappings to one canonical job.
+
+**Refresh data** only refetches PostgreSQL data. **Update listings** starts source
+ingestion locally; the hosted UI hides it based on `/api/ingestion-status` rather than
+exposing cron credentials or weakening the existing write guard. **Last updated**
+uses the last persisted successful ingestion completion, not browser refresh time.
+Hosted profile/résumé/interaction/application writes use the anonymous session owner and same-origin checks.
+The local background-thread sync and progress polling remain available.
+
+[Services](https://vercel.com/docs/services),
+[cron authentication](https://vercel.com/docs/cron-jobs/manage-cron-jobs), and
+[function limits](https://vercel.com/docs/functions/limitations) document Vercel's
+platform behavior.
 
 ### Neon connection
 
@@ -510,6 +580,7 @@ python -m playwright install chromium
 python scripts/check_recommendations_ui.py --browser-executable /path/to/chromium
 python scripts/check_apply_ui.py --browser-executable /path/to/chromium
 python scripts/check_cache_ui.py  # Bundled Chromium; isolated cache/loading/date checks
+python scripts/check_sessions_ui.py  # Independent A/B browsers; isolated profiles/actions/resumes
 python scripts/check_daily_email.py --browser-executable /path/to/chromium
 ```
 
@@ -522,9 +593,9 @@ Prefer the isolated runner: `check_profile_ui.py` alone appends fixture résumé
 Unit-only command: `python -m unittest discover -s tests -v`; DB tests require
 `TEST_DATABASE_URL`. Previews/screenshots go to `data/screenshots`.
 
-**Production gaps:** authentication/multi-user ownership, durable ingestion workers,
+**Production gaps:** account login/recovery and cross-device identity,
 delivery webhooks/bounce handling, and deployment monitoring. Blocked descriptions,
 unknown technologies, and unrecognized locations remain incomplete. Real inbox
-rendering/delivery, installed cron execution, and broader device/screen-reader
+rendering/delivery and broader device/screen-reader
 coverage require deployment verification. No LLM/embedding/OCR services, SMS,
 application submission automation, or additional scheduler infrastructure are used.

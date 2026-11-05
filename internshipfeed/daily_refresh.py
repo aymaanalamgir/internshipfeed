@@ -41,9 +41,9 @@ class DailySettings:
             raise ValueError('DAILY_EMAIL_MIN_SCORE must be an integer 0..100 and DAILY_EMAIL_TOP_N an integer 1..5') from None
 
 
-def run_daily_refresh(settings: DailySettings, dry_run=False, batch_id=None, ingestion_options=None, email_config=None):
+def run_daily_refresh(settings=None, dry_run=False, batch_id=None, ingestion_options=None, email_config=None):
     result = {'status': 'failed', 'exit_code': 1, 'batch_id': None, 'new_jobs': 0,
-              'eligible_jobs': 0, 'notified_jobs': 0, 'subject': '', 'html': '', 'message': ''}
+              'ingestion_status': 'failed', 'notification_status': 'not_attempted', 'eligible_jobs': 0, 'notified_jobs': 0, 'subject': '', 'html': '', 'message': ''}
     logger.info('Daily refresh started')
     with db.connect() as conn:
         db.initialize(conn)
@@ -53,6 +53,7 @@ def run_daily_refresh(settings: DailySettings, dry_run=False, batch_id=None, ing
         try:
             run = db.get_batch(conn, batch_id) if batch_id else run_ingestion(**(ingestion_options or {}))
             if run:
+                result['ingestion_status'] = run['status']
                 result['batch_id'] = str(run['id'])
                 for source in run.get('sources', []):
                     logger.info('Source %s: %s (%s fetched, %s failed)', source['key'], source['status'], source.get('scraped', 0), source.get('failed', 0))
@@ -65,10 +66,18 @@ def run_daily_refresh(settings: DailySettings, dry_run=False, batch_id=None, ing
             partial = run['status'] == 'partial_failure'
             result['status'], result['exit_code'] = ('partial_failure', 1) if partial else ('success', 0)
             result['new_jobs'] = len(run['new_canonical_job_ids'])
+            try:
+                settings = settings or DailySettings.from_env()
+                if not dry_run and email_config is None:
+                    email_config = EmailConfig.from_env()
+            except ValueError:
+                logger.info('Ingestion committed; optional email is not configured')
+                result['notification_status'] = 'skipped_unconfigured'
+                return result
             candidate = db.development_profile(conn)
             if candidate is None:
                 logger.error('Development candidate profile is missing; no email sent')
-                return dict(result, status='failed', exit_code=1)
+                return dict(result, notification_status='failed')
             ids = db.unnotified_job_ids(conn, candidate['id'], run['new_canonical_job_ids'])
             entries = db.candidate_job_details(conn, candidate['id'], job_ids=ids)
             behavior = build_behavior_profile(db.behavior_history(conn, candidate['id']))
@@ -79,23 +88,26 @@ def run_daily_refresh(settings: DailySettings, dry_run=False, batch_id=None, ing
             result.update(subject=digest.subject, html=digest.html, message=digest.text)
             logger.info('%s new canonical jobs; %s eligible; %s selected for email', result['new_jobs'], len(eligible), len(digest.job_ids))
             if not digest.job_ids:
+                result['notification_status'] = 'no_matches'
                 logger.info('No new sendable matches; no email sent')
                 return result
             if dry_run:
                 result['status'] = 'dry_run_partial_failure' if partial else 'dry_run'
+                result['notification_status'] = 'dry_run'
                 logger.info('Dry run; email not sent and notification history unchanged')
                 return result
             try:
                 receipt = send_email(digest, email_config)
             except EmailError as error:
                 logger.error('email not confirmed: %s', error)
-                return dict(result, status='email_failed', exit_code=1)
+                return dict(result, notification_status='failed')
             logger.info('email accepted by Resend: %s', receipt.message_id)
             try:
                 db.record_job_notifications(conn, candidate['id'], list(digest.job_ids), receipt.message_id)
             except psycopg.Error:
                 logger.error('email accepted but notification history could not be saved; check Resend before retrying batch %s', run['id'])
-                return dict(result, status='notification_record_failed', exit_code=1)
+                return dict(result, notification_status='record_failed')
+            result['notification_status'] = 'success'
             result['notified_jobs'] = len(digest.job_ids)
             return result
         finally:
@@ -120,13 +132,7 @@ def main(argv=None):
     load_dotenv(db.ROOT / '.env', override=False)
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     try:
-        settings = DailySettings.from_env()
-        config = None if args.dry_run else EmailConfig.from_env()
-    except ValueError as error:
-        logger.error('Configuration error: %s', error)
-        return 2
-    try:
-        result = run_daily_refresh(settings, dry_run=args.dry_run, batch_id=args.batch_id, email_config=config,
+        result = run_daily_refresh(dry_run=args.dry_run, batch_id=args.batch_id,
                                    ingestion_options={'enrich': not args.no_enrich, 'enrichment_limit': args.enrich_limit})
     except Exception as error:
         logger.error('Daily refresh failed (%s); no automatic retry', type(error).__name__)

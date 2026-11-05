@@ -121,11 +121,13 @@ class DailyCommandTests(unittest.TestCase):
         for value in ('Subject: test subject', 'test digest', '<p>test digest</p>'):
             self.assertIn(value, output.getvalue())
 
-    def test_real_command_requires_config_before_ingestion(self):
+    def test_real_command_runs_without_email_configuration(self):
         with patch('internshipfeed.daily_refresh.load_dotenv'), patch.dict(os.environ, {}, clear=True), \
-             patch('internshipfeed.daily_refresh.run_daily_refresh') as run:
-            self.assertEqual(main([]), 2)
-        run.assert_not_called()
+             patch('internshipfeed.daily_refresh.run_daily_refresh', return_value={'exit_code': 0}) as run, \
+             patch('internshipfeed.daily_refresh.EmailConfig.from_env') as config:
+            self.assertEqual(main([]), 0)
+        run.assert_called_once()
+        config.assert_not_called()
 
     def test_retry_flags_paired_and_limits_validated(self):
         for argv in (['--no-ingest'], ['--batch-id', 'not-a-uuid'], ['--enrich-limit', '-1']):

@@ -27,7 +27,7 @@ export function ListingsPage({ workflow, sources, onUpdated, onOpenJob }: {
   const eligible = jobs.filter(item => !states[item.job.id]?.dismissed && !states[item.job.id]?.applied);
   const visible = filterListings(eligible, filters);
   return <main className="workspace listings-page" id="main-content">
-    <div className="page-heading"><h1 tabIndex={-1}>All listings</h1><button id="reload" className="text-button" disabled={query.isFetching} onClick={() => void query.refetch()}>Refresh</button></div>
+    <div className="page-heading"><h1 tabIndex={-1}>All listings</h1><button id="reload" className="text-button" title="Refetch stored jobs; does not scrape sources" disabled={query.isFetching} onClick={() => void query.refetch()}>Refresh data</button></div>
     <FilterBar jobs={eligible} sources={sources} filters={filters} onChange={value => { setFilters(value); setLimit(40); }} />
     <div className="directory-meta"><span id="summary">{loading ? 'Loading listings…' : `${visible.length} of ${eligible.length} jobs`}</span><SyncControl onUpdated={onUpdated} /></div>
     {!loading && <RefreshState fetching={query.isFetching} error={query.isError} onRetry={() => void query.refetch()} />}

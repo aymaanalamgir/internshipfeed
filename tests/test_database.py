@@ -19,6 +19,10 @@ from internshipfeed import db
 from internshipfeed.api import app, connection
 from internshipfeed.cli import main
 from internshipfeed.sources import CANADIAN
+from internshipfeed.notifications import EmailConfig
+
+EMAIL_CONFIG = EmailConfig("test-key", "sender@example.com", "recipient@example.com")
+
 from internshipfeed.resumes import MAX_PDF_PAGES, MAX_UPLOAD_BYTES
 from pdf_fixtures import make_pdf
 
@@ -46,6 +50,7 @@ class DatabaseTests(unittest.TestCase):
         self.connect = lambda: original_connect(self.dsn)
         self.conn = self.connect()
         db.initialize(self.conn)
+        self.conn.execute("UPDATE job_sources SET enabled=false WHERE key='simplify-off-season'")
         # Advisory locks are database-wide, unlike the per-test schema. Keep the
         # real lock behavior while allowing tests beside a running application sync.
         sync_lock = -int(uuid.uuid4().hex[:15], 16)
@@ -56,12 +61,23 @@ class DatabaseTests(unittest.TestCase):
         daily_lock_patch = patch('internshipfeed.daily_refresh.DAILY_REFRESH_LOCK', sync_lock - 1)
         daily_lock_patch.start()
         self.addCleanup(daily_lock_patch.stop)
+        real_client = TestClient
+        def seeded_client(*args, **kwargs):
+            client = real_client(*args, **kwargs)
+            owner = self.conn.execute('SELECT user_id FROM candidate_profiles ORDER BY id LIMIT 1').fetchone()
+            if owner:
+                client.cookies.set('internshipfeed_session', str(owner['user_id']))
+            return client
+        session_fixture = patch(__name__ + '.TestClient', side_effect=seeded_client)
+        session_fixture.start()
+        self.addCleanup(session_fixture.stop)
         self.records = parse_readme(FIXTURE.read_text())
         self.job = self.prepare(normalize(self.records[0], SOURCE_URL, "a"))
 
     def prepare(self, job, conn=None):
         conn = conn or self.conn
-        source = db.ensure_source(conn, job.source)
+        from internshipfeed.sources import SIMPLIFY
+        source = conn.execute("SELECT * FROM job_sources WHERE key='simplify'").fetchone() if job.source == SIMPLIFY.url else db.ensure_source(conn, job.source)
         snapshot = db.save_snapshot(conn, source['id'], FIXTURE.read_text())
         return job.model_copy(update={'source_id': source['id'], 'snapshot_id': str(snapshot['id'])})
 
@@ -102,7 +118,7 @@ class DatabaseTests(unittest.TestCase):
         second = self.job.model_copy(update={'source': SIMPLIFY.url, 'external_id': 'date-peer',
                                             'posted_at': date(2026, 11, 1), 'raw_posted_at': 'Nov 01, 2026'})
         self.save(second)
-        source = db.get_source_job(self.conn, SIMPLIFY.url, 'date-peer')
+        source = db.get_source_job(self.conn, self.conn.execute("SELECT id FROM job_sources WHERE key='simplify'").fetchone()['id'], 'date-peer')
         self.assertEqual(source.posted_at, date(2026, 11, 1))
         self.assertEqual(source.raw_posted_at, 'Nov 01, 2026')
         self.assertEqual(source.canonical_job_id, canonical.id)
@@ -130,7 +146,7 @@ class DatabaseTests(unittest.TestCase):
             path.write_text(header + old_row + new_row)
             with patch('internshipfeed.db.connect', side_effect=self.connect), \
                  patch('internshipfeed.daily_refresh.send_email', return_value=EmailReceipt('dates-fixture')):
-                result = run_daily_refresh(DailySettings(0), ingestion_options=self.daily_options(directory, path))
+                result = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, ingestion_options=self.daily_options(directory, path))
         batch = db.get_batch(self.conn, result['batch_id'])
         discovered = next(job for job in db.list_jobs(self.conn) if job.company == 'Discovered')
         self.assertEqual(discovered.posted_at, date(2020, 1, 1))
@@ -203,7 +219,7 @@ class DatabaseTests(unittest.TestCase):
 
     def test_latest_resume_returns_only_candidate_scoped_metadata(self):
         candidate = db.development_profile(self.conn)['id']
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         db.save_resume_text(self.conn, other, 'other.pdf', 'Private other candidate text')
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             self.assertIsNone(client.get('/api/resumes/latest').json())
@@ -219,7 +235,7 @@ class DatabaseTests(unittest.TestCase):
 
     def test_resume_skills_are_candidate_scoped_and_do_not_mutate_profile(self):
         candidate = db.development_profile(self.conn)['id']
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         foreign = db.save_resume_text(self.conn, other, 'other.pdf', 'Private Python')
         before = db.development_profile(self.conn)
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
@@ -268,14 +284,14 @@ class DatabaseTests(unittest.TestCase):
         old_id = db.list_jobs(self.conn)[0].id
         with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.db.connect', side_effect=self.connect), \
              patch('internshipfeed.daily_refresh.send_email', return_value=EmailReceipt('145ea166-6aca-43d3-b749-c203049cc9d1')) as send:
-            first = run_daily_refresh(DailySettings(0), ingestion_options=self.daily_options(directory))
+            first = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, ingestion_options=self.daily_options(directory))
             batch = db.get_batch(self.conn, first['batch_id'])
             self.assertNotIn(old_id, batch['new_canonical_job_ids'])
             self.assertGreater(first['new_jobs'], 0)
             self.assertEqual(first['exit_code'], 0)
             self.assertEqual(send.call_count, 1)
             send.reset_mock()
-            second = run_daily_refresh(DailySettings(0), ingestion_options=self.daily_options(directory))
+            second = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, ingestion_options=self.daily_options(directory))
             self.assertEqual(second['new_jobs'], 0)
             self.assertEqual(second['notified_jobs'], 0)
             send.assert_not_called()
@@ -298,7 +314,7 @@ class DatabaseTests(unittest.TestCase):
             return EmailReceipt('145ea166-6aca-43d3-b749-c203049cc9d1')
         with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.db.connect', side_effect=connect), \
              patch('internshipfeed.daily_refresh.send_email', side_effect=send):
-            result = run_daily_refresh(DailySettings(0), ingestion_options=self.daily_options(directory))
+            result = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, ingestion_options=self.daily_options(directory))
         shared = db.get_source_job(self.conn, self.job.source, self.job.external_id).canonical_job_id
         self.assertEqual(len(db.get_job_details(self.conn, shared).sources), 2)
         self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_notifications WHERE canonical_job_id=%s', (shared,)).fetchone()['n'], 1)
@@ -318,7 +334,7 @@ class DatabaseTests(unittest.TestCase):
             path.write_text('\n'.join(FIXTURE.read_text().splitlines()[:3] + rows))
             with patch('internshipfeed.db.connect', side_effect=self.connect), \
                  patch('internshipfeed.daily_refresh.send_email', return_value=EmailReceipt('145ea166-6aca-43d3-b749-c203049cc9d1')) as send:
-                result = run_daily_refresh(DailySettings(60, 3), ingestion_options=self.daily_options(directory, path))
+                result = run_daily_refresh(DailySettings(60, 3), email_config=EMAIL_CONFIG, ingestion_options=self.daily_options(directory, path))
                 with TestClient(app) as client:
                     recommended = client.get('/api/recommendations').json()
                 below_threshold = run_daily_refresh(DailySettings(68, 3), dry_run=True, batch_id=result['batch_id'])
@@ -394,14 +410,15 @@ class DatabaseTests(unittest.TestCase):
         from internshipfeed.notifications import EmailError, EmailReceipt
         with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.db.connect', side_effect=self.connect):
             with patch('internshipfeed.daily_refresh.send_email', side_effect=EmailError('Fixture provider failure')):
-                failed = run_daily_refresh(DailySettings(0), ingestion_options=self.daily_options(directory))
-            self.assertEqual((failed['status'], failed['exit_code']), ('email_failed', 1))
+                failed = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, ingestion_options=self.daily_options(directory))
+            self.assertEqual((failed['status'], failed['exit_code']), ('success', 0))
+            self.assertEqual(failed['notification_status'], 'failed')
             self.assertGreater(len(db.list_jobs(self.conn)), 0)
             self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_notifications').fetchone()['n'], 0)
             with patch('internshipfeed.daily_refresh.run_ingestion') as ingest, \
                  patch('internshipfeed.daily_refresh.send_email', return_value=EmailReceipt('145ea166-6aca-43d3-b749-c203049cc9d1')) as send:
-                retried = run_daily_refresh(DailySettings(0), batch_id=failed['batch_id'])
-                again = run_daily_refresh(DailySettings(0), batch_id=failed['batch_id'])
+                retried = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, batch_id=failed['batch_id'])
+                again = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, batch_id=failed['batch_id'])
                 ingest.assert_not_called()
                 self.assertEqual(send.call_count, 1)
             self.assertGreater(retried['notified_jobs'], 0)
@@ -412,7 +429,7 @@ class DatabaseTests(unittest.TestCase):
         from contextlib import redirect_stdout
         from internshipfeed.daily_refresh import DailySettings, main as daily_main, run_daily_refresh
         with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.db.connect', side_effect=self.connect), patch('internshipfeed.daily_refresh.send_email') as send:
-            result = run_daily_refresh(DailySettings(0), dry_run=True, ingestion_options=self.daily_options(directory))
+            result = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, dry_run=True, ingestion_options=self.daily_options(directory))
             self.assertEqual(result['status'], 'dry_run')
             self.assertIn('https://', result['message'])
             with patch.dict(os.environ, {'DAILY_EMAIL_MIN_SCORE': '0'}), redirect_stdout(io.StringIO()) as output:
@@ -428,7 +445,7 @@ class DatabaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.db.connect', side_effect=self.connect), \
              patch('internshipfeed.ingestion.fetch_text', side_effect=RuntimeError('Fixture unavailable')), \
              patch('internshipfeed.daily_refresh.send_email', return_value=EmailReceipt('145ea166-6aca-43d3-b749-c203049cc9d1')) as send:
-            result = run_daily_refresh(DailySettings(0), ingestion_options={'output': directory, 'enrich': False,
+            result = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, ingestion_options={'output': directory, 'enrich': False,
                 'input_paths': {'simplify': FIXTURE.parent / 'simplify.md'}})
         self.assertEqual((result['status'], result['exit_code']), ('partial_failure', 1))
         self.assertGreater(result['notified_jobs'], 0)
@@ -441,7 +458,7 @@ class DatabaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.db.connect', side_effect=self.connect), \
              patch('internshipfeed.ingestion.fetch_text', side_effect=RuntimeError('Fixture unavailable')), \
              patch('internshipfeed.daily_refresh.send_email') as send:
-            result = run_daily_refresh(DailySettings(0), ingestion_options={'output': directory, 'enrich': False})
+            result = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, ingestion_options={'output': directory, 'enrich': False})
         self.assertEqual((result['status'], result['exit_code']), ('failed', 1))
         self.assertEqual(db.get_batch(self.conn, result['batch_id'])['source_failures'], 2)
         send.assert_not_called()
@@ -449,12 +466,12 @@ class DatabaseTests(unittest.TestCase):
     def test_daily_retries_apply_current_workflow_filtering(self):
         from internshipfeed.daily_refresh import DailySettings, run_daily_refresh
         with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.db.connect', side_effect=self.connect):
-            initial = run_daily_refresh(DailySettings(0), dry_run=True, ingestion_options=self.daily_options(directory))
+            initial = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, dry_run=True, ingestion_options=self.daily_options(directory))
             candidate = db.development_profile(self.conn)['id']
             for index, details in enumerate(db.list_job_details(self.conn)):
                 db.record_interaction(self.conn, candidate, details.job.id, 'dismiss' if index % 2 else 'applied')
             with patch('internshipfeed.daily_refresh.send_email') as send:
-                result = run_daily_refresh(DailySettings(0), batch_id=initial['batch_id'])
+                result = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, batch_id=initial['batch_id'])
         send.assert_not_called()
         self.assertEqual(result['eligible_jobs'], 0)
 
@@ -484,7 +501,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(db.record_job_notifications(self.conn, candidate, [b], 'SM' + 'b' * 32), [])
         self.save(records[1].model_copy(update={'resolved_url': records[0].url, 'description': 'Verified role', 'enrichment_status': 'success'}))
         self.assertEqual(db.unnotified_job_ids(self.conn, candidate, [a, b]), [])
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         self.assertEqual(db.unnotified_job_ids(self.conn, other, [a, b]), [a])
         self.assertEqual(self.conn.execute('SELECT canonical_job_id FROM job_notifications').fetchone()['canonical_job_id'], b)
 
@@ -500,14 +517,15 @@ class DatabaseTests(unittest.TestCase):
         finally:
             self.conn.execute('SELECT pg_advisory_unlock(%s)', (DAILY_REFRESH_LOCK,))
 
-    def test_notification_record_failure_is_nonzero_after_email_without_rollback_of_ingestion(self):
+    def test_notification_record_failure_is_separate_after_committed_ingestion(self):
         from internshipfeed.daily_refresh import DailySettings, run_daily_refresh
         from internshipfeed.notifications import EmailReceipt
         with tempfile.TemporaryDirectory() as directory, patch('internshipfeed.db.connect', side_effect=self.connect), \
              patch('internshipfeed.daily_refresh.send_email', return_value=EmailReceipt('145ea166-6aca-43d3-b749-c203049cc9d1')), \
              patch('internshipfeed.db.record_job_notifications', side_effect=psycopg.OperationalError('fixture failure')):
-            result = run_daily_refresh(DailySettings(0), ingestion_options=self.daily_options(directory))
-        self.assertEqual((result['status'], result['exit_code']), ('notification_record_failed', 1))
+            result = run_daily_refresh(DailySettings(0), email_config=EMAIL_CONFIG, ingestion_options=self.daily_options(directory))
+        self.assertEqual((result['status'], result['exit_code']), ('success', 0))
+        self.assertEqual(result['notification_status'], 'record_failed')
         self.assertGreater(len(db.list_jobs(self.conn)), 0)
         self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_notifications').fetchone()['n'], 0)
 
@@ -625,7 +643,7 @@ class DatabaseTests(unittest.TestCase):
     def test_removed_configuration_endpoints_are_absent(self):
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             self.assertEqual(client.get('/api/settings/ai').status_code, 404)
-            self.assertEqual(len(client.get('/api/sources').json()), 2)
+            self.assertEqual(len(client.get('/api/sources').json()), 3)
 
     def test_url_match_links_two_source_identities_to_one_canonical_job(self):
         from internshipfeed.sources import SIMPLIFY
@@ -635,7 +653,7 @@ class DatabaseTests(unittest.TestCase):
         self.save(first)
         self.save(second)
         a = db.get_source_job(self.conn, first.source, first.external_id)
-        b = db.get_source_job(self.conn, second.source, second.external_id)
+        b = db.get_source_job(self.conn, self.conn.execute("SELECT id FROM job_sources WHERE key='simplify'").fetchone()['id'], second.external_id)
         self.assertNotEqual(a.id, b.id)
         self.assertNotEqual(a.external_id, b.external_id)
         self.assertEqual(a.canonical_job_id, b.canonical_job_id)
@@ -647,7 +665,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(db.list_jobs(self.conn, source=SIMPLIFY.url)), 1)
         self.assertEqual(len(db.list_jobs(self.conn, query='SWE Co-op')), 1)
         self.assertEqual(self.save(second), 'skipped_duplicates')
-        self.assertEqual(db.get_source_job(self.conn, second.source, second.external_id).canonical_job_id, a.canonical_job_id)
+        self.assertEqual(db.get_source_job(self.conn, b.source_id, second.external_id).canonical_job_id, a.canonical_job_id)
 
     def test_same_title_different_or_missing_urls_not_merged(self):
         first = self.job.model_copy(update={'url': 'https://stripe.com/jobs/search?gh_jid=123'})
@@ -855,7 +873,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(set(types.values()), {'text[]'})
         db.initialize(self.conn)
         self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
-        self.assertEqual(db.development_profile(self.conn), stored)
+        self.assertEqual(db.development_profile(self.conn), {key:value for key,value in stored.items() if key!='user_id'})
 
     def test_profile_update_normalizes_all_lists_before_persistence(self):
         payload = {
@@ -913,7 +931,7 @@ class DatabaseTests(unittest.TestCase):
                     self.assertEqual(client.put('/api/profile', json=body).status_code, 422)
         self.assertEqual(db.development_profile(self.conn), before)
 
-    def test_profile_missing_fails_clearly_without_creating_another_row(self):
+    def test_profile_first_visit_creates_blank_candidate_without_legacy_seed(self):
         from internshipfeed.models import CandidateProfileUpdate
         self.conn.execute('DELETE FROM candidate_profiles')
         empty = {key: [] for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms')}
@@ -922,9 +940,10 @@ class DatabaseTests(unittest.TestCase):
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             responses = [client.get('/api/profile'), client.put('/api/profile', json=empty)]
         for response in responses:
-            self.assertEqual(response.status_code, 503)
-            self.assertIn('Development profile is missing', response.json()['detail'])
-        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 0)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['skills'], [])
+        self.assertEqual(responses[0].json()['id'], responses[1].json()['id'])
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
 
     def test_profile_update_reuses_local_mutation_policy(self):
         payload = {key: [] for key in ('target_roles', 'skills', 'preferred_locations', 'preferred_terms')}
@@ -1017,7 +1036,7 @@ class DatabaseTests(unittest.TestCase):
             self.save(record)
             records.append(record)
             ids.append(db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id)
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         db.record_interaction(self.conn, other, ids[2], 'dismiss')
         for job_id, actions in ((ids[0], ('save', 'click')), (ids[1], ('save', 'save', 'applied')), (ids[2], ('view',))):
             for action in actions:
@@ -1077,7 +1096,7 @@ class DatabaseTests(unittest.TestCase):
             for path in ('/api/saved', '/api/applied'):
                 self.assertEqual(client.get(path).json()[0]['job']['id'], history)
                 self.assertNotIn('final_score', client.get(path).json()[0])
-            other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+            other = db.create_anonymous_candidate(self.conn)[1]['id']
             db.record_interaction(self.conn, other, frontend, 'applied')
             db.record_interaction(self.conn, candidate, backend, 'view')
             # View only changes the state timestamp/cursor, never ranking signals.
@@ -1110,13 +1129,13 @@ class DatabaseTests(unittest.TestCase):
                     self.assertEqual(client.get('/api/recommendations?min_score=' + value).status_code, 422)
             self.assertEqual(client.get('/api/recommendations?min_score=0').status_code, 200)
 
-    def test_recommendations_missing_profile_fails_without_reseeding(self):
+    def test_recommendations_first_visit_creates_private_blank_profile(self):
         self.conn.execute('DELETE FROM candidate_profiles')
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             response = client.get('/api/recommendations')
-        self.assertEqual(response.status_code, 503)
-        self.assertIn('Development profile is missing', response.json()['detail'])
-        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 0)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
 
     def test_interaction_api_appends_events_for_the_development_candidate(self):
         self.save(self.job)
@@ -1200,7 +1219,7 @@ class DatabaseTests(unittest.TestCase):
 
     def test_dismiss_reversal_follows_merges_and_is_candidate_scoped(self):
         candidate = db.development_profile(self.conn)['id']
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         records = [self.job.model_copy(update={'external_id': str(index), 'url': 'https://example.com/dismiss-merge/' + str(index)}) for index in range(2)]
         for record in records:
             self.save(record)
@@ -1298,7 +1317,7 @@ class DatabaseTests(unittest.TestCase):
             self.save(record)
         a, b = [db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id for record in records]
         candidate = db.development_profile(self.conn)['id']
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         old = db.record_interaction(self.conn, candidate, b, 'save')
         db.record_interaction(self.conn, candidate, a, 'applied')
         db.record_interaction(self.conn, candidate, a, 'unsave')
@@ -1383,7 +1402,7 @@ class DatabaseTests(unittest.TestCase):
         self.save(self.job)
         job_id = db.list_jobs(self.conn)[0].id
         first = db.development_profile(self.conn)['id']
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         db.record_interaction(self.conn, other, job_id, 'dismiss')
         db.record_interaction(self.conn, other, job_id, 'applied')
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
@@ -1419,15 +1438,15 @@ class DatabaseTests(unittest.TestCase):
         self.assertFalse(states[0]['dismissed'])
         self.assertEqual(self.conn.execute('SELECT canonical_job_id FROM job_interactions WHERE id=%s', (old['id'],)).fetchone()['canonical_job_id'], ids[2])
 
-    def test_interaction_apis_missing_profile_fail_without_reseeding(self):
+    def test_interaction_apis_first_visit_create_session_owned_state(self):
         self.save(self.job)
         job_id = db.list_jobs(self.conn)[0].id
         self.conn.execute('DELETE FROM candidate_profiles')
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
-            for response in (client.get('/api/interactions'), client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'save'})):
-                self.assertEqual(response.status_code, 503)
-                self.assertIn('Development profile is missing', response.json()['detail'])
-        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 0)
+            self.assertEqual(client.get('/api/interactions').json(), [])
+            self.assertEqual(client.post('/api/jobs/%s/interactions' % job_id, json={'type': 'save'}).status_code, 201)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM job_interactions').fetchone()['n'], 1)
 
     def test_interaction_endpoints_do_not_change_fit_scores_or_canonical_jobs(self):
         self.save(self.job)
@@ -1534,7 +1553,7 @@ class DatabaseTests(unittest.TestCase):
     def test_application_updates_require_existing_candidate_application_and_valid_status(self):
         self.save(self.job)
         job_id = db.list_jobs(self.conn)[0].id
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         db.record_interaction(self.conn, other, job_id, 'applied')
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             for status in ('interview', 'rejected', 'ghosted', 'offered'):
@@ -1614,7 +1633,7 @@ class DatabaseTests(unittest.TestCase):
             self.save(job)
             ids.append(db.get_source_job(self.conn, job.source, job.external_id).canonical_job_id)
         candidate = db.development_profile(self.conn)['id']
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         self.conn.execute('DROP TABLE job_applications')
         self.conn.execute('DROP INDEX job_interactions_profile_job_event_idx')
         self.conn.execute("DELETE FROM schema_migrations WHERE version IN ('012_application_tracking.sql', '013_application_merge_index.sql')")
@@ -1644,7 +1663,7 @@ class DatabaseTests(unittest.TestCase):
     def test_application_merges_preserve_progress_dates_and_candidate_scope(self):
         from internshipfeed import applications
         candidate = db.development_profile(self.conn)['id']
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         records = [self.job.model_copy(update={'external_id': str(index), 'url': 'https://example.com/app-merge/' + str(index)}) for index in range(2)]
         for record in records:
             self.save(record)
@@ -1726,7 +1745,7 @@ class DatabaseTests(unittest.TestCase):
         for record in records:
             self.save(record)
         ids = [db.get_source_job(self.conn, record.source, record.external_id).canonical_job_id for record in records]
-        other = self.conn.execute('INSERT INTO candidate_profiles DEFAULT VALUES RETURNING id').fetchone()['id']
+        other = db.create_anonymous_candidate(self.conn)[1]['id']
         db.record_interaction(self.conn, other, ids[0], 'dismiss')
         db.record_interaction(self.conn, other, ids[0], 'applied')
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
@@ -1743,11 +1762,12 @@ class DatabaseTests(unittest.TestCase):
                 self.assertTrue(rows[0]['interaction_state']['saved'] and rows[0]['interaction_state']['applied'])
             self.assertEqual(client.get('/api/recommendations').json(), [])
 
-    def test_workflow_views_fail_clearly_without_a_profile(self):
+    def test_workflow_views_initialize_one_private_profile_per_session(self):
         self.conn.execute('DELETE FROM candidate_profiles')
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:
             for path in ('/api/saved', '/api/applied', '/api/dismissed', '/api/recommendations', '/api/feed', '/api/jobs'):
-                self.assertEqual(client.get(path).status_code, 503)
+                self.assertEqual(client.get(path).status_code, 200)
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM candidate_profiles').fetchone()['n'], 1)
 
     def test_pdf_resume_upload_persists_text_metadata_and_preserves_profile(self):
         before = db.development_profile(self.conn)
@@ -1824,12 +1844,11 @@ class DatabaseTests(unittest.TestCase):
                                    headers={'Origin': 'https://evil.example'})
             self.assertEqual(rejected.status_code, 403)
             self.conn.execute('DELETE FROM candidate_profiles')
-            with patch('internshipfeed.api.extract_pdf_text') as extract:
-                missing = client.post('/api/resumes', files={'file': ('resume.pdf', content, 'application/pdf')})
-                self.assertEqual(missing.status_code, 503)
-                self.assertIn('Development profile is missing', missing.json()['detail'])
-                extract.assert_not_called()
-        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM resumes').fetchone()['n'], 0)
+            with patch('internshipfeed.api.extract_pdf_text',return_value='Valid resume text') as extract:
+                created = client.post('/api/resumes', files={'file': ('resume.pdf', content, 'application/pdf')})
+                self.assertEqual(created.status_code, 201)
+                extract.assert_called_once()
+        self.assertEqual(self.conn.execute('SELECT count(*) AS n FROM resumes').fetchone()['n'], 1)
 
     def test_resume_stores_only_basename_from_client_path(self):
         with patch('internshipfeed.api.db.connect', side_effect=self.connect), TestClient(app) as client:

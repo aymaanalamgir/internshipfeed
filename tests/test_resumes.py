@@ -74,7 +74,7 @@ class UploadResourceTests(unittest.TestCase):
         request = Request({'type': 'http', 'client': ('127.0.0.1', 1), 'headers': []})
         with patch.object(stream, 'read', wraps=stream.read) as read, patch('internshipfeed.api.extract_pdf_text') as extract:
             with self.assertRaises(HTTPException) as error:
-                upload_resume(request=request, file=upload, conn=object())
+                upload_resume(file=upload, conn=object(), candidate={'id': 1})
             self.assertEqual(error.exception.status_code, 413)
             read.assert_called_once_with(MAX_UPLOAD_BYTES + 1)
             extract.assert_not_called()
@@ -86,11 +86,11 @@ class UploadResourceTests(unittest.TestCase):
             upload = UploadFile(file=BytesIO(content), filename='resume.pdf')
             with patch('internshipfeed.api.db.development_profile', return_value={'id': 1}), patch('internshipfeed.api.db.save_resume_text') as save:
                 if content.startswith(b'%PDF'):
-                    upload_resume(request=request, file=upload, conn=object())
+                    upload_resume(file=upload, conn=object(), candidate={'id': 1})
                     save.assert_called_once_with(unittest.mock.ANY, 1, 'resume.pdf', 'Sample Candidate')
                 else:
                     with self.assertRaises(HTTPException) as error:
-                        upload_resume(request=request, file=upload, conn=object())
+                        upload_resume(file=upload, conn=object(), candidate={'id': 1})
                     self.assertEqual(error.exception.status_code, 422)
                     save.assert_not_called()
             self.assertTrue(upload.file.closed)

@@ -13,6 +13,7 @@ export function ProfileDrawer({ onClose }: { onClose: () => void }) {
   const query = useQuery(profileQuery());
   const profile = query.data;
   return <Drawer title="Profile" kind="profile" onClose={onClose}>
+    <p className="muted">Your profile is saved to this browser. Other browsers and devices have separate profiles.</p>
     {!profile && query.isError ? <div className="load-error" role="alert"><p>Could not load profile.</p><button className="button" onClick={() => void query.refetch()}>Try again</button></div>
       : !profile ? <LoadingState label="Loading profile…" />
       : <><RefreshState fetching={query.isFetching} error={query.isError} onRetry={() => void query.refetch()} /><ProfileForm profile={profile} suggestions={{

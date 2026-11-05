@@ -1,5 +1,6 @@
 """Parse Simplify's category HTML tables, including badges and continuation rows."""
 import re
+import hashlib
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -122,9 +123,14 @@ def parse_simplify(markdown):
                 continue
             if headers is None:
                 continue
-            if len(cells) != len(headers):
+            row_headers = headers
+            # Archived off-season tables omit the Term heading but retain its cells.
+            if (len(cells) == len(headers) + 1 and headers[:3] == ['company', 'role', 'location']
+                    and 'term' not in headers and re.fullmatch(r'(?:Winter|Spring|Summer|Fall|Autumn)\s+20\d{2}(?:,\s*(?:Winter|Spring|Summer|Fall|Autumn)\s+20\d{2})*', text_content(cells[3]), re.I)):
+                row_headers = headers[:3] + ['term'] + headers[3:]
+            if len(cells) != len(row_headers):
                 raise ValueError("Malformed Simplify row at line %s" % number)
-            row = dict(zip(headers, cells))
+            row = dict(zip(row_headers, cells))
             name = text_content(row["company"])
             name = re.sub(r"[🔥🛂🎓🇺🇸]", "", name).replace("\ufe0f", "").strip()
             if name in {"↳", "↪", ""}:
@@ -143,6 +149,10 @@ def parse_simplify(markdown):
             closed = "🔒" in text_content(application) or bool(re.search(r"\bclosed\b", text_content(application), re.I))
             companion = next((url for url in urls if urlparse(url).hostname in {"simplify.jobs", "www.simplify.jobs"} and urlparse(url).path.startswith("/p/")), None)
             external_id = "simplify:" + urlparse(companion).path.rstrip("/").split("/")[-1] if companion else None
+            row_term = text_content(row.get('term', ''))
+            if external_id is None and row_term:
+                identity = '\0'.join(value.casefold() for value in (name, title, location, row_term))
+                external_id = 'simplify:row:' + hashlib.sha256(identity.encode()).hexdigest()
             raw_date = text_content(row.get("age", row.get("date posted", row.get("date", ""))))
             kind = "relative" if re.fullmatch(r"\d+\s*[dhwm]", raw_date, re.I) else "exact" if re.search(r"\b20\d{2}\b", raw_date) else "yearless" if raw_date else "missing"
             if not name or not title or not location:
@@ -150,7 +160,7 @@ def parse_simplify(markdown):
             records.append(SourceJobRecord(
                 company=name, title=title, location=location, url=url,
                 status="closed" if closed else "open" if url else "unknown",
-                posted_at_raw=raw_date, date_kind=kind, term=default_term,
+                posted_at_raw=raw_date, date_kind=kind, term=row_term or default_term,
                 external_id=external_id, source_line=number,
                 raw_company=row["company"], raw_title=row["role"], raw_location=row["location"],
                 raw_url=url, raw_posted_at=raw_date,

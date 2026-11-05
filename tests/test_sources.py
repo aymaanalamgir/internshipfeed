@@ -5,12 +5,29 @@ from pathlib import Path
 
 from internshipfeed.models import JobListing
 from internshipfeed.normalize import normalize
-from internshipfeed.sources import CANADIAN, SIMPLIFY
+from internshipfeed.sources import CANADIAN, SIMPLIFY, SIMPLIFY_OFF_SEASON
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 
 
 class SourceTests(unittest.TestCase):
+    def test_off_season_uses_shared_parser_with_explicit_terms_and_archived_missing_heading(self):
+        self.assertIs(SIMPLIFY_OFF_SEASON.parse, SIMPLIFY.parse)
+        markup = (FIXTURES / 'simplify.md').read_text()
+        markup = markup.replace('<td><a href="https://example.com/jobs/123', '<td>Winter 2027, Spring 2027</td><td><a href="https://example.com/jobs/123')
+        record = SIMPLIFY_OFF_SEASON.parse(markup)[0]
+        self.assertEqual(record.term, 'Winter 2027, Spring 2027')
+        self.assertEqual(record.posted_at_raw, '2d')
+        self.assertEqual(record.status, 'open')
+        self.assertEqual(record.url, 'https://example.com/jobs/123?x=1&y=2')
+
+    def test_archived_off_season_rows_without_urls_keep_distinct_term_identities(self):
+        header='<table><tr><th>Company</th><th>Role</th><th>Location</th><th>Application</th><th>Age</th></tr>'
+        row='<tr><td>Acme</td><td>Intern</td><td>Toronto</td><td>{}</td><td>🔒</td><td>2mo</td></tr>'
+        records=SIMPLIFY_OFF_SEASON.parse(header+row.format('Winter 2026')+row.format('Winter 2027')+'</table>')
+        self.assertNotEqual(records[0].external_id,records[1].external_id)
+        self.assertTrue(all(record.status=='closed' for record in records))
+
     def test_exact_dates_from_both_parsers_and_raw_metadata(self):
         canadian = CANADIAN.parse((FIXTURES / 'listings.md').read_text())[0]
         self.assertEqual(normalize(canadian, CANADIAN.url, 'a').posted_at, date(2026, 10, 2))

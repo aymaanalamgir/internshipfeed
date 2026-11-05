@@ -70,6 +70,8 @@ try:
             browser = p.chromium.launch(executable_path=args.browser_executable, headless=True)
             try:
                 context = browser.new_context(viewport={'width': 1280, 'height': 1000})
+                owner=conn.execute('SELECT user_id FROM candidate_profiles WHERE id=%s',(candidate,)).fetchone()['user_id']
+                context.add_cookies([{'name':'internshipfeed_session','value':str(owner),'url':base,'httpOnly':True,'sameSite':'Lax'}])
                 def external(route):
                     assert 'referer' not in route.request.headers
                     route.fulfill(body='<title>Application fixture</title><p>External application</p>', content_type='text/html')
@@ -100,6 +102,7 @@ try:
                     else:
                         open_tab()
                 page.goto(base + '/')
+                expect(page.locator('.nav-links a')).to_have_count(5)
                 assert page.locator('.nav-links a').all_text_contents() == ['Recommended', 'All listings', 'Applied', 'Saved', 'Dismissed']
                 expect(page.locator('.application-status')).to_have_count(0)
                 expect(card(first)).to_be_visible()

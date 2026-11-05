@@ -8,6 +8,7 @@ import '@fontsource/ibm-plex-sans/latin-500.css';
 import '@fontsource/ibm-plex-sans/latin-600.css';
 import './styles.css';
 import App from './App';
+import { SessionGate } from './components/SessionGate';
 
 const queryClient = createQueryClient();
-createRoot(document.getElementById('root')!).render(<StrictMode><QueryClientProvider client={queryClient}><App /></QueryClientProvider></StrictMode>);
+createRoot(document.getElementById('root')!).render(<StrictMode><QueryClientProvider client={queryClient}><SessionGate><App /></SessionGate></QueryClientProvider></StrictMode>);

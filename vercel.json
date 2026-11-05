@@ -4,7 +4,8 @@
     "app": {
       "root": ".",
       "framework": "fastapi",
-      "entrypoint": "internshipfeed.api:app"
+      "entrypoint": "internshipfeed.api:app",
+      "functions": { "internshipfeed/api.py": { "maxDuration": 300 } }
     },
     "frontend": {
       "root": "frontend",
@@ -17,6 +18,7 @@
       ]
     }
   },
+  "crons": [{ "path": "/api/cron/ingest", "schedule": "0 5 * * *" }],
   "rewrites": [
     { "source": "/api/:path*", "destination": { "service": "app" } },
     { "source": "/(.*)", "destination": { "service": "frontend" } }

@@ -8,7 +8,7 @@ from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from internshipfeed.api import app, connection, local_mutation
+from internshipfeed.api import app, connection, current_candidate, local_ingestion_mutation as local_mutation
 from internshipfeed.models import CandidateProfileUpdate
 from pdf_fixtures import make_pdf
 
@@ -128,7 +128,7 @@ class ApiFailureTests(unittest.TestCase):
 
     def test_resume_insert_failure_does_not_log_document_or_database_details(self):
         private_text = 'Private Candidate Resume Content'
-        with patch.dict(app.dependency_overrides, {connection: lambda: object()}), \
+        with patch.dict(app.dependency_overrides, {connection: lambda: object(), current_candidate: lambda: {'id': 1}}), \
              patch('internshipfeed.api.db.connect', side_effect=psycopg.OperationalError('offline')), \
              patch('internshipfeed.api.db.development_profile', return_value={'id': 1}), \
              patch('internshipfeed.api.db.save_resume_text', side_effect=psycopg.DataError(private_text)), TestClient(app) as client:

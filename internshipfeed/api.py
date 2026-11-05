@@ -1,17 +1,18 @@
 """Database-backed API and the consolidated React product."""
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from uuid import UUID
 
 from typing import List, Literal, Optional
 
 import psycopg
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import applications, db
+from . import applications, db, sessions
 from .models import (ApplicationStatus, ApplicationUpdate, AppliedJobView, JobApplication, CandidateJobView, CandidateProfile, CandidateProfileUpdate, CanonicalJob,
                      InteractionReceipt, InteractionRequest, JobDetails, JobInteractionState, RecommendedJobView, Resume, ResumeMetadata, ResumeSkillSuggestions)
 from .matching import score_job
@@ -21,6 +22,7 @@ from .resume_skills import extract_resume_skills, skill_aliases
 from .resumes import MAX_UPLOAD_BYTES, ResumeExtractionError, extract_pdf_text
 from .ingestion import SYNC_LOCK, recover_interrupted
 from .sync import start_sync
+from .scheduled_ingestion import run_scheduled_ingestion
 
 logger = logging.getLogger(__name__)
 FRONTEND_ENTRY = db.ROOT / 'frontend' / 'dist' / 'index.html'
@@ -48,6 +50,32 @@ def connection():
         raise HTTPException(status_code=503, detail="Job storage is unavailable. Please try again later.")
 
 
+@app.middleware('http')
+async def private_api_responses(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'private, no-store'
+        vary = response.headers.get('Vary', '')
+        response.headers['Vary'] = ', '.join(filter(None, [vary, 'Cookie']))
+    return response
+
+
+def current_candidate(request: Request, response: Response, conn=Depends(connection)):
+    if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+        sessions.user_mutation(request)
+    user_id, candidate, created = sessions.resolve_candidate(conn, request.cookies.get(sessions.COOKIE_NAME))
+    response.set_cookie(sessions.COOKIE_NAME, str(user_id), max_age=sessions.COOKIE_MAX_AGE,
+                        expires=sessions.COOKIE_MAX_AGE, path='/', httponly=True,
+                        secure=sessions.secure_cookie(request), samesite='lax')
+    request.state.anonymous_created = created
+    return candidate
+
+
+@app.get('/api/session')
+def session(request: Request, candidate=Depends(current_candidate)):
+    return {'anonymous': True, 'created': request.state.anonymous_created}
+
+
 @app.get("/api/sources")
 def sources(conn=Depends(connection)):
     return db.source_directory(conn)
@@ -56,16 +84,16 @@ def sources(conn=Depends(connection)):
 @app.get("/api/jobs", response_model=List[CanonicalJob])
 def jobs(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
-         source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection)):
-    profile = _development_candidate(conn)
+         source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection), candidate=Depends(current_candidate)):
+    profile = candidate
     return [details.job for details, _ in db.candidate_job_details(conn, profile['id'], 'listings', status=status, query=q, source=source, source_id=source_id)]
 
 
 @app.get("/api/feed", response_model=List[JobDetails])
 def feed(status: Optional[Literal["open", "closed", "unknown"]] = None,
          q: Optional[str] = Query(default=None, max_length=200),
-         source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection)):
-    profile = _development_candidate(conn)
+         source: Optional[str] = None, source_id: Optional[int] = None, conn=Depends(connection), candidate=Depends(current_candidate)):
+    profile = candidate
     return [details for details, _ in db.candidate_job_details(conn, profile['id'], 'listings', status=status, query=q, source=source, source_id=source_id)]
 
 
@@ -101,7 +129,7 @@ def latest_ingestion_run(conn=Depends(connection)):
     return rows[0] if rows else None
 
 
-def local_mutation(request):
+def local_ingestion_mutation(request):
     vercel = os.environ.get('VERCEL') == '1'
     development = vercel and os.environ.get('VERCEL_ENV') == 'development'
     if vercel and not development:
@@ -117,23 +145,35 @@ def local_mutation(request):
         raise HTTPException(403, "Cross-origin actions are not allowed.")
 
 
+@app.get('/api/cron/ingest')
+def cron_ingest(request: Request):
+    secret = os.environ.get('CRON_SECRET', '')
+    authorization = request.headers.get('authorization', '')
+    if not secret or not secrets.compare_digest(authorization.encode(), ('Bearer ' + secret).encode()):
+        raise HTTPException(401, 'Unauthorized')
+    summary = run_scheduled_ingestion()
+    return JSONResponse(summary, status_code=503 if summary['status'] in {'failed', 'partial_failure'} else 200,
+                        headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/api/ingestion-status')
+def ingestion_status(request: Request, conn=Depends(connection)):
+    try:
+        local_ingestion_mutation(request)
+        allowed = True
+    except HTTPException:
+        allowed = False
+    return {**db.sync_status(conn), 'manual_sync_allowed': allowed,
+            'scheduled_sync_configured': bool(os.environ.get('CRON_SECRET'))}
+
+
 @app.get("/api/profile", response_model=CandidateProfile)
-def profile(conn=Depends(connection)):
-    result = db.development_profile(conn)
-    if result is None:
-        raise HTTPException(503, "Development profile is missing. Initialize the database before using profiles.")
-    return result
+def profile(candidate=Depends(current_candidate)):
+    return candidate
 
 
-def _development_candidate(conn):
-    profile = db.development_profile(conn)
-    if profile is None:
-        raise HTTPException(503, "Development profile is missing. Initialize the database before using job views.")
-    return profile
-
-
-def _job_collection(conn, view, min_score=0, application_status=None):
-    profile = CandidateProfile.model_validate(_development_candidate(conn))
+def _job_collection(conn, candidate, view, min_score=0, application_status=None):
+    profile = CandidateProfile.model_validate(candidate)
     tracked = applications.list_applications(conn, profile.id, application_status) if view == 'applied' else []
     application_by_job = {row['canonical_job_id']: row for row in tracked}
     entries = db.candidate_job_details(conn, profile.id, view,
@@ -158,42 +198,37 @@ def _job_collection(conn, view, min_score=0, application_status=None):
 
 
 @app.get("/api/recommendations", response_model=List[RecommendedJobView])
-def recommendations(min_score: int = Query(default=0, ge=0, le=100), conn=Depends(connection)):
-    return _job_collection(conn, 'recommended', min_score)
+def recommendations(min_score: int = Query(default=0, ge=0, le=100), conn=Depends(connection), candidate=Depends(current_candidate)):
+    return _job_collection(conn, candidate, 'recommended', min_score)
 
 
 @app.get("/api/saved", response_model=List[CandidateJobView])
-def saved_jobs(conn=Depends(connection)):
-    return _job_collection(conn, 'saved')
+def saved_jobs(conn=Depends(connection), candidate=Depends(current_candidate)):
+    return _job_collection(conn, candidate, 'saved')
 
 
 @app.get("/api/applied", response_model=List[AppliedJobView])
-def applied_jobs(status: Optional[ApplicationStatus] = None, conn=Depends(connection)):
-    return _job_collection(conn, 'applied', application_status=status)
+def applied_jobs(status: Optional[ApplicationStatus] = None, conn=Depends(connection), candidate=Depends(current_candidate)):
+    return _job_collection(conn, candidate, 'applied', application_status=status)
 
 
 @app.get("/api/dismissed", response_model=List[CandidateJobView])
-def dismissed_jobs(conn=Depends(connection)):
-    return _job_collection(conn, 'dismissed')
+def dismissed_jobs(conn=Depends(connection), candidate=Depends(current_candidate)):
+    return _job_collection(conn, candidate, 'dismissed')
 
 
 @app.put("/api/profile", response_model=CandidateProfile)
-def update_profile(update: CandidateProfileUpdate, request: Request, conn=Depends(connection)):
-    local_mutation(request)
-    result = db.update_development_profile(conn, update)
-    if result is None:
-        raise HTTPException(503, "Development profile is missing. Initialize the database before using profiles.")
-    return result
+def update_profile(update: CandidateProfileUpdate, conn=Depends(connection), candidate=Depends(current_candidate)):
+    return db.update_candidate_profile(conn, candidate['id'], update)
 
 
 @app.get("/api/resumes/latest", response_model=Optional[ResumeMetadata])
-def latest_resume(conn=Depends(connection)):
-    return db.latest_resume_metadata(conn, _development_candidate(conn)['id'])
+def latest_resume(conn=Depends(connection), candidate=Depends(current_candidate)):
+    return db.latest_resume_metadata(conn, candidate['id'])
 
 
 @app.get("/api/resumes/{resume_id}/skill-suggestions", response_model=ResumeSkillSuggestions)
-def resume_skill_suggestions(resume_id: int, conn=Depends(connection)):
-    candidate = _development_candidate(conn)
+def resume_skill_suggestions(resume_id: int, conn=Depends(connection), candidate=Depends(current_candidate)):
     resume = conn.execute('SELECT id, extracted_text FROM resumes WHERE id=%s AND candidate_profile_id=%s',
                           (resume_id, candidate['id'])).fetchone()
     if resume is None:
@@ -207,19 +242,12 @@ def resume_skill_suggestions(resume_id: int, conn=Depends(connection)):
 
 
 @app.get("/api/interactions", response_model=List[JobInteractionState])
-def interactions(conn=Depends(connection)):
-    candidate = db.development_profile(conn)
-    if candidate is None:
-        raise HTTPException(503, "Development profile is missing. Initialize the database before using interactions.")
+def interactions(conn=Depends(connection), candidate=Depends(current_candidate)):
     return db.interaction_states(conn, candidate['id'])
 
 
 @app.post("/api/jobs/{job_id}/interactions", response_model=InteractionReceipt, status_code=201)
-def job_interaction(job_id: int, interaction: InteractionRequest, request: Request, conn=Depends(connection)):
-    local_mutation(request)
-    candidate = db.development_profile(conn)
-    if candidate is None:
-        raise HTTPException(503, "Development profile is missing. Initialize the database before using interactions.")
+def job_interaction(job_id: int, interaction: InteractionRequest, conn=Depends(connection), candidate=Depends(current_candidate)):
     try:
         return db.record_interaction_with_state(conn, candidate['id'], job_id, interaction.type)
     except ValueError:
@@ -227,9 +255,7 @@ def job_interaction(job_id: int, interaction: InteractionRequest, request: Reque
 
 
 @app.patch("/api/jobs/{job_id}/application", response_model=JobApplication)
-def update_application(job_id: int, update: ApplicationUpdate, request: Request, conn=Depends(connection)):
-    local_mutation(request)
-    candidate = _development_candidate(conn)
+def update_application(job_id: int, update: ApplicationUpdate, conn=Depends(connection), candidate=Depends(current_candidate)):
     result = applications.update_application(conn, candidate['id'], job_id, update.status)
     if result is None:
         raise HTTPException(404, "Application not found. Mark this job as applied first.")
@@ -238,7 +264,7 @@ def update_application(job_id: int, update: ApplicationUpdate, request: Request,
 
 @app.post("/api/sync", status_code=202)
 def sync_jobs(request: Request):
-    local_mutation(request)
+    local_ingestion_mutation(request)
     try:
         return start_sync()
     except (psycopg.Error, RuntimeError):
@@ -247,9 +273,8 @@ def sync_jobs(request: Request):
 
 
 @app.post("/api/resumes", response_model=Resume, status_code=201)
-def upload_resume(request: Request, file: UploadFile = File(...), conn=Depends(connection)):
+def upload_resume(file: UploadFile = File(...), conn=Depends(connection), candidate=Depends(current_candidate)):
     try:
-        local_mutation(request)
         # Retain a filename, never a path supplied by a client on either platform.
         filename = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
         if not filename.lower().endswith(".pdf") or "\x00" in filename:
@@ -263,9 +288,6 @@ def upload_resume(request: Request, file: UploadFile = File(...), conn=Depends(c
         content = file.file.read(MAX_UPLOAD_BYTES + 1)
         if len(content) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, "PDF must be 5 MiB or smaller.")
-        candidate = db.development_profile(conn)
-        if candidate is None:
-            raise HTTPException(503, "Development profile is missing. Initialize the database before using resumes.")
         try:
             text = extract_pdf_text(content)
         except ResumeExtractionError as exc:

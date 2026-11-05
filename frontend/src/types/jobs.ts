@@ -105,4 +105,5 @@ export interface JobDetails {
   sources: SourceReference[];
 }
 export interface JobSource { id: number; name: string; url: string; }
-export interface SyncRun { id: string; status: string; inserted?: number; updated?: number; processed?: number; scraped?: number; }
+export interface SyncRun { id: string; status: string; inserted?: number; updated?: number; processed?: number; scraped?: number; finished_at?: string | null; }
+export interface IngestionStatus { latest_run: SyncRun | null; last_successful_at: string | null; manual_sync_allowed: boolean; scheduled_sync_configured: boolean; }
