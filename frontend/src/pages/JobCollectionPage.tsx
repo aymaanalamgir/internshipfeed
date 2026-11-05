@@ -1,7 +1,7 @@
 // Load and render scored job collections with shared workflow state and retry handling.
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collectionQuery, invalidateJobs } from '../lib/queries';
+import { collectionQuery, invalidateJobs, profileQuery } from '../lib/queries';
 import { LoadingState, RefreshState } from '../components/LoadingState';
 import { ApplicationStatusControl } from '../components/ApplicationStatusControl';
 import { APPLICATION_STATUSES } from '../lib/applications';
@@ -19,6 +19,7 @@ export function JobCollectionPage({ view, workflow, onOpenJob, onOpenProfile }: 
   const [applicationFilter, setApplicationFilter] = useState<ApplicationStatus | ''>('');
   const client = useQueryClient();
   const query = useQuery(collectionQuery(view, applicationFilter));
+  const { data: profile } = useQuery(profileQuery());
   const jobs = query.data ?? [];
   const loading = query.data === undefined;
   const [limit, setLimit] = useState(24);
@@ -39,7 +40,7 @@ export function JobCollectionPage({ view, workflow, onOpenJob, onOpenProfile }: 
     {loading && !query.isError ? <LoadingState />
       : loading && query.isError ? <div className="load-error" role="alert"><p>Could not load {TITLES[view].toLowerCase()} jobs.</p><button className="button" onClick={() => void query.refetch()}>Try again</button></div>
       : !visible.length ? <p className="empty-state">{view === 'applied' && applicationFilter ? 'No applications with this status.' : EMPTY[view]} {view === 'recommended' && <button className="text-button" onClick={onOpenProfile}>Edit profile</button>}</p>
-      : <><div className="recommendation-list">{visible.slice(0, limit).map(item => <RecommendationCard key={item.job.id} recommendation={item} view={view}
+      : <><div className="recommendation-list">{visible.slice(0, limit).map(item => <RecommendationCard key={item.job.id} recommendation={item} view={view} profile={profile}
         applicationControl={view === 'applied' && item.application && <ApplicationStatusControl key={item.application.id + ':' + item.application.updated_at}
           application={item.application} disabled={Boolean(workflow.pending[item.job.id])} onUpdated={() => { void invalidateJobs(client); }} />}
         interactionState={states[item.job.id] ?? emptyInteraction(item.job.id)} pending={workflow.pending[item.job.id]} error={workflow.errors[item.job.id]}

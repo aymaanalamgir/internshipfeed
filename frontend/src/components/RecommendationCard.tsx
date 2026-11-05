@@ -1,6 +1,7 @@
 // Present a scored job with technical tags, workflow dates, explanations, and actions.
 import type { ReactNode } from 'react';
 import type { AppliedAction, DismissAction, CandidateJob, CanonicalJob, InteractionState, InteractionType, JobView, RankingSignals, Recommendation, SaveAction } from '../types/jobs';
+import type { ProfileValues } from '../types/profile';
 import { PostedDate } from './PostedDate';
 import { JobActions } from './JobActions';
 import { SkillTag } from './SkillTag';
@@ -8,13 +9,14 @@ import { MatchSummary } from './MatchSummary';
 
 interface Props {
   applicationControl?: ReactNode;
+  profile?: ProfileValues;
   view?: JobView; recommendation: Recommendation & Partial<RankingSignals> & Partial<Pick<CandidateJob, 'term' | 'keywords' | 'application'>>;
   interactionState: InteractionState; pending?: InteractionType; error?: string;
   onApply: (job: CanonicalJob) => void; onSave: (id: number, type: SaveAction) => void; onDismiss: (id: number, type: DismissAction) => void; onApplied: (id: number, type: AppliedAction) => void;
   onOpenJob?: (id: number) => void; onOpenProfile?: () => void;
 }
 export function RecommendationCard({ view = 'recommended', recommendation, interactionState, pending, error,
-  onApply, onSave, onDismiss, onApplied, onOpenJob, onOpenProfile, applicationControl }: Props) {
+  onApply, onSave, onDismiss, onApplied, onOpenJob, onOpenProfile, applicationControl, profile }: Props) {
   const { job, keywords } = recommendation;
   const appliedAt = recommendation.application?.applied_at ?? interactionState.applied_at;
   const personalized = view === 'recommended' && recommendation.final_score !== undefined;
@@ -34,7 +36,7 @@ export function RecommendationCard({ view = 'recommended', recommendation, inter
     </div><span className="match-score">{personalized ? recommendation.final_score : recommendation.score}<small>% match</small></span></div>
     {skills.length > 0 && <div className="skill-tags matched-technologies" aria-label="Job skills">{skills.slice(0, 6).map(skill => <SkillTag key={skill} label={skill} />)}
       {skills.length > 6 && <span className="tag-overflow">+{skills.length - 6}</span>}</div>}
-    <MatchSummary recommendation={recommendation} personalized={personalized} onOpenProfile={onOpenProfile} />
+    <MatchSummary recommendation={recommendation} personalized={personalized} profile={profile} onOpenProfile={onOpenProfile} />
     <JobActions job={job} state={interactionState} pending={pending} error={error} appliedView={view === 'applied'}
       onApply={onApply} onSave={onSave} onApplied={onApplied} onDismiss={onDismiss} />
   </article>;

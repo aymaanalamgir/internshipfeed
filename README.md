@@ -296,6 +296,15 @@ Profile and job details open in drawers over the current tab. `/profile` opens
 Profile over Recommended; `/feed` aliases All listings. Shared components display
 server scores/order, progressively rendering 24 cards or 40 directory rows.
 
+Cards retain one **% match** value (Recommended uses the existing final score) and
+a short evidence summary. **Why this job?** expands matched roles, skills,
+locations, terms, and supported activity reasons; component scores and formulas
+stay in the API. Scores below 40 receive a UI-only **Limited match** label and
+brief gaps only for configured preferences with available job metadata. Empty
+profiles see setup guidance and **Edit profile**, with no baseline math.
+The [explanation transformer](frontend/src/lib/recommendation-explanation.ts)
+formats existing evidence without changing scoring or ordering.
+
 Apply opens HTTP(S) immediately in a new tab (`noopener noreferrer`), records
 `click` without blocking navigation, and asks **Did you apply for this role?**
 
