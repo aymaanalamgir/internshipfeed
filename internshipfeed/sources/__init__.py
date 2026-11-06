@@ -14,6 +14,7 @@ class JobSource:
     url: str
     readme_url: str
     parse: Callable[[str], List[SourceJobRecord]]
+    parser_version: int = 1
 
 
 def parse_canadian(markdown):
@@ -31,13 +32,13 @@ SIMPLIFY = JobSource(
     key="simplify", name="Simplify Internships",
     url="https://github.com/SimplifyJobs/Summer2027-Internships",
     readme_url="https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/README.md",
-    parse=parse_simplify,
+    parse=parse_simplify, parser_version=2,
 )
 SIMPLIFY_OFF_SEASON = JobSource(
     key="simplify-off-season", name="Simplify Off-Season Internships",
     url=SIMPLIFY.url,
     readme_url="https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/README-Off-Season.md",
-    parse=parse_simplify,
+    parse=parse_simplify, parser_version=2,
 )
 SOURCES = (CANADIAN, SIMPLIFY, SIMPLIFY_OFF_SEASON)
 

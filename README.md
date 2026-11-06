@@ -71,7 +71,7 @@ share persistence, eligibility, and ranking logic.
 | --- | --- | --- |
 | `canadian-tech` | [Canadian Tech Internships](https://github.com/negarprh/Canadian-Tech-Internships-2027) | `main/README.md`; Markdown tables, inherited company names, badges, dates, closed markers. |
 | `simplify` | [SimplifyJobs Summer 2027](https://github.com/SimplifyJobs/Summer2027-Internships) | `dev/README.md`; category HTML tables, location details, companion IDs, document terms. Includes international jobs. |
-| `simplify-off-season` | Same Simplify repository | `dev/README-Off-Season.md`; same `parse_simplify`, including per-row terms and archived tables with an omitted Term heading. |
+| `simplify-off-season` | Same Simplify repository | `dev/README-Off-Season.md`; same `parse_simplify`, including `Term`/`Terms` columns and archived tables with an omitted Term heading. |
 
 `job_sources` configures each dataset; the registry binds its key to a parser.
 Python `urllib` fetches source files; Markdown rules and `HTMLParser` parse them.
@@ -96,7 +96,7 @@ IDs independently of upstream dates. Existing posting-date indexes cover this fi
 - **Visibility:** closed/dead jobs are excluded from discovery. An active observation can keep a job visible when another source closes it; absence from a fully parsed/validated successful source snapshot closes that source posting. Fetch/parse/validation/storage failures suppress missing-posting closure; history is retained. Temporary fetch failures do not prove a dead link.
 
 HTTP limits: **20 s timeout, 5 MB responses, two transient-error retries**.
-Source hashes are compared against the last **successfully applied** incremental snapshot, never merely the last download. Identical hashes record successful no-change runs and skip parsing/enrichment. Changed sources normalize every row; unchanged observations update lineage/last-seen metadata in bulk, while material changes use normal reconciliation. Failed/partial snapshots are retried.
+Source hashes are compared against the last **successfully applied** incremental snapshot, never merely the last download. Identical hashes and parser versions record successful no-change runs and skip parsing/enrichment. A source-specific parser version change reapplies retained metadata on the next ingestion, even when the upstream file is unchanged; existing source identities are preserved. Changed sources normalize every row; unchanged observations update lineage/last-seen metadata in bulk, while material changes use normal reconciliation. Failed/partial snapshots are retried.
 
 Posting/mapping/canonical changes commit atomically; row/source failures preserve
 other work. Advisory locks serialize sync/reconciliation. Batch and source reports

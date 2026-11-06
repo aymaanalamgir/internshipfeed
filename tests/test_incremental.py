@@ -55,6 +55,58 @@ class IncrementalTests(unittest.TestCase):
         return run_ingestion(conn=self.connect(),input_paths={source.key:path},source_keys=[source.key],
                              enrich=options.pop('enrich',False),write_files=False,**options)
 
+    def test_parser_revision_repairs_unchanged_snapshot_once_without_duplicate_ids(self):
+        text = (FIXTURES / 'simplify-off-season.md').read_text()
+        configured = self.conn.execute("SELECT * FROM job_sources WHERE key='simplify-off-season'").fetchone()
+        def legacy_parse(markdown):
+            return SIMPLIFY_OFF_SEASON.parse(markdown.replace('<th>Terms</th>', '<th>Ignored</th>'))
+        legacy_source = replace(SIMPLIFY_OFF_SEASON, parse=legacy_parse, parser_version=1)
+        with patch('internshipfeed.ingestion.db.configured_sources', return_value=[(configured, legacy_source)]):
+            first = self.ingest(text, SIMPLIFY_OFF_SEASON)
+        # Historical successful reports have no parser_version key.
+        self.conn.execute("UPDATE ingestion_runs SET report=report-'parser_version'")
+        before = self.conn.execute('SELECT id,external_id FROM source_postings ORDER BY id').fetchall()
+        canonical_ids = [row['id'] for row in self.conn.execute('SELECT id FROM canonical_jobs ORDER BY id')]
+        self.assertTrue(all(row['term'] is None for row in self.conn.execute('SELECT term FROM source_postings')))
+        second = self.ingest(text, SIMPLIFY_OFF_SEASON)
+        self.assertEqual(second['status'], 'success')
+        self.assertEqual(second['parsed'], 2)
+        self.assertEqual(second['updated'], 2)
+        self.assertEqual(second['inserted'], 0)
+        self.assertEqual(second['new_canonical_job_ids'], [])
+        self.assertEqual(second['sources'][0]['parser_version'], SIMPLIFY_OFF_SEASON.parser_version)
+        self.assertEqual(first['sources'][0]['snapshot_id'], second['sources'][0]['snapshot_id'])
+        self.assertEqual(before, self.conn.execute('SELECT id,external_id FROM source_postings ORDER BY id').fetchall())
+        self.assertEqual(canonical_ids, [row['id'] for row in self.conn.execute('SELECT id FROM canonical_jobs ORDER BY id')])
+        self.assertEqual([row['term'] for row in self.conn.execute('SELECT term FROM source_postings ORDER BY id')],
+                         ['Winter 2027, Spring 2027', 'Fall 2026'])
+        active = next(row for row in self.conn.execute("SELECT m.canonical_job_id FROM source_postings p JOIN canonical_job_sources m ON m.source_posting_id=p.id WHERE p.status='open'"))
+        self.assertEqual(db.get_job_details(self.conn, active['canonical_job_id']).term, 'Winter 2027, Spring 2027')
+        parser = Mock(side_effect=AssertionError('Already applied this parser revision'))
+        source = replace(SIMPLIFY_OFF_SEASON, parse=parser)
+        with patch('internshipfeed.ingestion.db.configured_sources', return_value=[(configured, source)]):
+            third = self.ingest(text, SIMPLIFY_OFF_SEASON)
+        self.assertEqual(third['unchanged_sources'], 1)
+        self.assertEqual(third['parsed'], 0)
+        parser.assert_not_called()
+
+    def test_failed_parser_revision_retries_identical_content(self):
+        self.ingest(SIMPLIFY_TEXT, SIMPLIFY)
+        configured = self.conn.execute("SELECT * FROM job_sources WHERE key='simplify'").fetchone()
+        version = SIMPLIFY.parser_version + 1
+        broken = replace(SIMPLIFY, parser_version=version, parse=Mock(side_effect=ValueError('bad parser')))
+        with patch('internshipfeed.ingestion.db.configured_sources', return_value=[(configured, broken)]):
+            failed = self.ingest(SIMPLIFY_TEXT, SIMPLIFY)
+        self.assertEqual(failed['status'], 'failed')
+        parser = Mock(wraps=SIMPLIFY.parse)
+        repaired = replace(SIMPLIFY, parser_version=version, parse=parser)
+        with patch('internshipfeed.ingestion.db.configured_sources', return_value=[(configured, repaired)]):
+            retried = self.ingest(SIMPLIFY_TEXT, SIMPLIFY)
+        self.assertEqual(retried['status'], 'success')
+        self.assertEqual(retried['parsed'], 3)
+        self.assertEqual(retried['inserted'], 0)
+        parser.assert_called_once()
+
     def test_unchanged_hash_skips_parser_enrichment_and_duplicates(self):
         first=self.ingest()
         ids=[r['id'] for r in self.conn.execute('SELECT id FROM canonical_jobs ORDER BY id')]

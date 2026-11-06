@@ -149,12 +149,14 @@ def parse_simplify(markdown):
             closed = "🔒" in text_content(application) or bool(re.search(r"\bclosed\b", text_content(application), re.I))
             companion = next((url for url in urls if urlparse(url).hostname in {"simplify.jobs", "www.simplify.jobs"} and urlparse(url).path.startswith("/p/")), None)
             external_id = "simplify:" + urlparse(companion).path.rstrip("/").split("/")[-1] if companion else None
-            row_term = text_content(row.get('term', ''))
-            if external_id is None and row_term:
-                identity = '\0'.join(value.casefold() for value in (name, title, location, row_term))
+            row_term = text_content(row.get('term', row.get('terms', '')))
+            # Preserve linkless archive IDs created before the plural Terms header was supported.
+            identity_term = text_content(row.get('term', ''))
+            if external_id is None and identity_term:
+                identity = '\0'.join(value.casefold() for value in (name, title, location, identity_term))
                 external_id = 'simplify:row:' + hashlib.sha256(identity.encode()).hexdigest()
             raw_date = text_content(row.get("age", row.get("date posted", row.get("date", ""))))
-            kind = "relative" if re.fullmatch(r"\d+\s*[dhwm]", raw_date, re.I) else "exact" if re.search(r"\b20\d{2}\b", raw_date) else "yearless" if raw_date else "missing"
+            kind = "relative" if re.fullmatch(r"\d+\s*(?:[dhwm]|mo)", raw_date, re.I) else "exact" if re.search(r"\b20\d{2}\b", raw_date) else "yearless" if raw_date else "missing"
             if not name or not title or not location:
                 raise ValueError("Missing Simplify listing field at line %s" % number)
             records.append(SourceJobRecord(

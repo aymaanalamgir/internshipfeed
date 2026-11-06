@@ -149,7 +149,8 @@ def run_ingestion(input_path=None, output=None, enrich=True, enrichment_limit=No
         for configured, source in selected:
             report = {"key": source.key, "name": source.name, "source": source.url,
                       "source_id": configured['id'], "readme_url": source.readme_url,
-                      "incremental_version": 1, "status": "running", **dict.fromkeys(COUNTERS, 0)}
+                      "incremental_version": 1, "parser_version": source.parser_version,
+                      "status": "running", **dict.fromkeys(COUNTERS, 0)}
             before = {key: run[key] for key in COUNTERS}
             report['id'] = str(db.start_source_run(conn, configured['id'], run['id']))
             run['sources'].append(report)
@@ -168,7 +169,8 @@ def run_ingestion(input_path=None, output=None, enrich=True, enrichment_limit=No
                 db.record_source_run(conn, report['id'], report, snapshot['id'])
                 if write_files:
                     (output / 'snapshots' / (content_hash + '.md')).write_text(raw, encoding='utf-8')
-                if previous and previous['content_hash'] == content_hash and not force:
+                if (previous and previous['content_hash'] == content_hash and not force
+                        and previous['report'].get('parser_version', 1) == source.parser_version):
                     report.update(source_unchanged=True, status='success', scraped=previous['report']['scraped'],
                                   unchanged=previous['report'].get('unique_postings', previous['report']['scraped']),
                                   unique_postings=previous['report'].get('unique_postings', previous['report']['scraped']))

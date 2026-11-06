@@ -11,6 +11,40 @@ FIXTURES = Path(__file__).parent / 'fixtures'
 
 
 class SourceTests(unittest.TestCase):
+    def test_off_season_plural_and_singular_terms_survive_normalization(self):
+        markup = (FIXTURES / 'simplify-off-season.md').read_text()
+        for header in ('Terms', 'Term'):
+            with self.subTest(header=header):
+                records = SIMPLIFY_OFF_SEASON.parse(markup.replace('<th>Terms</th>', '<th>' + header + '</th>'))
+                job = normalize(records[0], SIMPLIFY_OFF_SEASON.url, 'a')
+                self.assertEqual(job.term, 'Winter 2027, Spring 2027')
+                self.assertEqual(job.external_id, 'simplify:off-season-123')
+                self.assertEqual(job.url, 'https://example.com/jobs/123?x=1&y=2')
+                self.assertIsNone(job.posted_at)
+                self.assertEqual(records[1].term, 'Fall 2026')
+                self.assertEqual(records[1].status, 'closed')
+
+    def test_plural_terms_fix_preserves_linkless_legacy_source_identity(self):
+        markup = (FIXTURES / 'simplify-off-season.md').read_text()
+        old = SIMPLIFY_OFF_SEASON.parse(markup.replace('<th>Terms</th>', '<th>Ignored</th>'))
+        current = SIMPLIFY_OFF_SEASON.parse(markup)
+        for before, after in zip(old, current):
+            with self.subTest(company=after.company):
+                self.assertIsNone(before.term)
+                self.assertIsNotNone(after.term)
+                self.assertEqual(normalize(before, SIMPLIFY_OFF_SEASON.url, 'a').external_id,
+                                 normalize(after, SIMPLIFY_OFF_SEASON.url, 'b').external_id)
+
+    def test_simplify_month_ages_are_relative_and_stay_undated(self):
+        markup = (FIXTURES / 'simplify.md').read_text()
+        for age in ('0d', '2h', '3w', '1m', '1mo', '12mo'):
+            with self.subTest(age=age):
+                record = SIMPLIFY.parse(markup.replace('<td>2d</td>', '<td>' + age + '</td>'))[0]
+                self.assertEqual(record.date_kind, 'relative')
+                job = normalize(record, SIMPLIFY.url, 'a')
+                self.assertIsNone(job.posted_at)
+                self.assertEqual(job.raw_posted_at, age)
+
     def test_off_season_uses_shared_parser_with_explicit_terms_and_archived_missing_heading(self):
         self.assertIs(SIMPLIFY_OFF_SEASON.parse, SIMPLIFY.parse)
         markup = (FIXTURES / 'simplify.md').read_text()
