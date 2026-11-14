@@ -90,6 +90,16 @@ non-null linked upstream date and updates when earlier evidence arrives.
 `first_seen_at` remains discovery metadata; daily email uses exact batch discovery
 IDs independently of upstream dates. Existing posting-date indexes cover this field.
 
+**Location and term filters:** [facets.py](internshipfeed/facets.py) normalizes each raw
+cell into a list of canonical values stored as `canonical_jobs.locations` / `terms`
+(GIN-indexed arrays, the union of a job's live postings). `Toronto, ON, Canada / NYC`
+becomes `Toronto, ON` and `New York, NY`; neighborhoods collapse to their city
+(`Kanata, Ottawa, ON` → `Ottawa, ON`); remote cells become `Remote (US)` etc. Terms split
+into single seasons (`Autumn` → `Fall`), falling back to the title only when the term cell
+has none. A job matches every value it holds. Options list remote first, then places
+alphabetically; terms run chronologically. Bump `RULES_VERSION` after changing the rules
+so startup recomputes stored jobs.
+
 ### Reconciliation and descriptions
 
 - **Within source:** upsert by `(source_id, external_id)`.

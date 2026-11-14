@@ -16,7 +16,8 @@ from psycopg.types.json import Jsonb
 from . import applications
 from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, JobInteractionState, JobKeywords, JobListing, JobListItem, JobListPage, SourceJobReference
 from .pagination import decode_cursor, encode_cursor
-from .reconciliation import RECONCILIATION_LOCK, backfill, canonicalize_url, link_posting, reconcile, refresh_canonical, root_id
+from .facets import RULES_VERSION as FACET_RULES_VERSION, term_sort_key
+from .reconciliation import RECONCILIATION_LOCK, backfill, job_facets, canonicalize_url, link_posting, reconcile, refresh_canonical, root_id
 from .sources import SOURCES, get_source
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,6 +50,26 @@ def initialize(conn):
             conn.execute('INSERT INTO schema_migrations (version) VALUES (%s)', (marker,))
         elif conn.execute('SELECT 1 FROM source_postings p LEFT JOIN canonical_job_sources m ON m.source_posting_id=p.id WHERE m.source_posting_id IS NULL LIMIT 1').fetchone():
             backfill(conn)
+        marker = '016_job_facets_backfill_v%s' % FACET_RULES_VERSION
+        if not conn.execute('SELECT 1 FROM schema_migrations WHERE version = %s', (marker,)).fetchone():
+            backfill_facets(conn)
+            conn.execute('INSERT INTO schema_migrations (version) VALUES (%s)', (marker,))
+
+
+def backfill_facets(conn):
+    """Recompute every canonical job's filter values in one statement (normalizer changes)."""
+    groups = {}
+    for row in conn.execute("""SELECT m.canonical_job_id AS id, p.location, p.term, p.title, p.status
+            FROM canonical_job_sources m JOIN source_postings p ON p.id=m.source_posting_id ORDER BY p.id"""):
+        groups.setdefault(row['id'], []).append(row)
+    values = []
+    for canonical_id, rows in groups.items():
+        locations, terms = job_facets(rows)
+        values.append({'id': canonical_id, 'locations': locations, 'terms': terms})
+    if values:
+        conn.execute("""UPDATE canonical_jobs c SET locations=ARRAY(SELECT jsonb_array_elements_text(v.locations)),
+            terms=ARRAY(SELECT jsonb_array_elements_text(v.terms))
+            FROM jsonb_to_recordset(%s) AS v(id bigint, locations jsonb, terms jsonb) WHERE c.id=v.id""", (Jsonb(values),))
 
 
 def ensure_source(conn, repository):
@@ -221,26 +242,16 @@ def _catalog_predicates(status=None, query=None, source=None, source_id=None, in
     return clauses, params
 
 
-PRIMARY_TERM_JOIN = """JOIN LATERAL (
-    SELECT p.term FROM canonical_job_sources m JOIN source_postings p ON p.id=m.source_posting_id
-    WHERE m.canonical_job_id=c.id
-    ORDER BY CASE p.status WHEN 'open' THEN 0 WHEN 'unknown' THEN 1 WHEN 'closed' THEN 2 ELSE 3 END,
-             p.posted_at IS NULL, p.id LIMIT 1
-) primary_posting ON true"""
-
-
 def _directory_query(profile_id, status=None, query=None, source=None, source_id=None, location=None, term=None):
     clauses, params = _catalog_predicates(status, query, source, source_id)
     clauses += ['NOT COALESCE(state.dismissed,false)', 'NOT COALESCE(state.applied,false)']
     if location:
-        clauses.append('c.location=%s'); params.append(location)
+        clauses.append('%s = ANY(c.locations)'); params.append(location)
     if term:
-        clauses.append('primary_posting.term=%s'); params.append(term)
+        clauses.append('%s = ANY(c.terms)'); params.append(term)
     prefix = RESOLVED_INTERACTIONS + ', candidate_state AS (' + INTERACTION_SUMMARY + ') '
     relation = """FROM canonical_jobs c JOIN canonical_job_identities i ON i.id=c.id
         LEFT JOIN candidate_state state ON state.job_id=c.id """
-    if term:
-        relation += PRIMARY_TERM_JOIN + ' '
     return prefix, relation, clauses, [profile_id, profile_id] + params
 
 
@@ -258,10 +269,8 @@ def list_job_summaries(conn, profile_id, limit=50, cursor=None, **filters):
         else:
             page_clauses.append('((c.posted_at,c.id) < (%s,%s) OR c.posted_at IS NULL)')
             page_params += [posted_at, job_id]
-    if not filters.get('term'):
-        relation += PRIMARY_TERM_JOIN + ' '
     state_columns = ', '.join('state.' + field for field in JobInteractionState.model_fields if field != 'job_id')
-    statement = prefix + """SELECT """ + ', '.join('c.' + field for field in CORE_FIELDS) + ", primary_posting.term, " + state_columns + """,
+    statement = prefix + """SELECT """ + ', '.join('c.' + field for field in CORE_FIELDS) + ", NULLIF(array_to_string(c.terms, ', '), '') AS term, " + state_columns + """,
         ARRAY(SELECT value FROM jsonb_array_elements_text(
             COALESCE(c.keywords->'languages','[]'::jsonb) || COALESCE(c.keywords->'frameworks','[]'::jsonb) ||
             COALESCE(c.keywords->'tools_and_platforms','[]'::jsonb)) WITH ORDINALITY AS tags(value, position)
@@ -281,11 +290,14 @@ def list_job_summaries(conn, profile_id, limit=50, cursor=None, **filters):
 
 def listing_filter_options(conn, profile_id):
     prefix, relation, clauses, params = _directory_query(profile_id)
-    return conn.execute(prefix + """SELECT
-        COALESCE(array_agg(DISTINCT c.location ORDER BY c.location),'{}') AS locations,
-        COALESCE(array_agg(DISTINCT primary_posting.term ORDER BY primary_posting.term)
-                 FILTER (WHERE primary_posting.term IS NOT NULL AND primary_posting.term<>''),'{}') AS terms
-        """ + relation + PRIMARY_TERM_JOIN + ' WHERE ' + ' AND '.join(clauses), params).fetchone()
+    rows = conn.execute(prefix + """SELECT facet.kind, array_agg(DISTINCT facet.value) AS values
+        """ + relation + """CROSS JOIN LATERAL (SELECT 'locations', unnest(c.locations)
+                                         UNION ALL SELECT 'terms', unnest(c.terms)) facet(kind, value)
+        WHERE """ + ' AND '.join(clauses) + ' GROUP BY facet.kind', params).fetchall()
+    row = {'locations': [], 'terms': [], **{item['kind']: item['values'] for item in rows}}
+    # Remote options lead, then places alphabetically; terms run chronologically.
+    locations = sorted(row['locations'], key=lambda value: (not value.startswith('Remote'), value.casefold()))
+    return {'locations': locations, 'terms': sorted(row['terms'], key=term_sort_key)}
 
 
 def _source_job(row):

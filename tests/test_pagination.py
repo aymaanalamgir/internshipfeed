@@ -119,6 +119,33 @@ class PaginationTests(unittest.TestCase):
         self.assertEqual(self.page(q='Backend Intern')['total'], 123)
         self.assertEqual(self.page(q='Vancouver')['total'], 62)
 
+    def test_multi_city_multi_term_job_appears_under_each_canonical_filter(self):
+        db.save_job(self.conn, JobListing(company='Multi', title='Platform Intern', location='Toronto, ON, Canada / NYC / Remote in USA',
+            url='https://example.test/jobs/multi', source=self.source['repository'], source_id=self.source['id'],
+            external_id='multi', snapshot_id=str(self.snapshot['id']), source_line=999, status='open',
+            term='Spring 2027, Winter 2027, Autumn 2027'))
+        for params in ({'location': 'Toronto, ON'}, {'location': 'New York, NY'}, {'location': 'Remote (US)'},
+                       {'term': 'Winter 2027'}, {'term': 'Spring 2027'}, {'term': 'Fall 2027'},
+                       {'location': 'New York, NY', 'term': 'Spring 2027'}):
+            with self.subTest(**params):
+                page = self.page(q='Multi', **params)
+                self.assertEqual(page['total'], 1)
+                self.assertEqual(page['items'][0]['term'], 'Winter 2027, Spring 2027, Fall 2027')
+        self.assertEqual(self.page(q='Multi', location='Toronto, ON, Canada / NYC / Remote in USA')['total'], 0)
+        options = self.client.get('/api/feed/filters').json()
+        self.assertEqual(options['locations'][0], 'Remote (US)')
+        self.assertTrue({'Toronto, ON', 'New York, NY', 'Toronto', 'Vancouver'} <= set(options['locations']))
+        self.assertFalse([value for value in options['locations'] if '/' in value])
+        self.assertEqual(options['terms'], ['Winter 2027', 'Spring 2027', 'Summer 2027', 'Fall 2027'])
+
+    def test_facet_backfill_recomputes_existing_rows(self):
+        expected = self.page(location='Toronto', term='Summer 2027')['total']
+        self.assertGreater(expected, 0)
+        self.conn.execute("UPDATE canonical_jobs SET locations='{}', terms='{}'")
+        self.assertEqual(self.page(location='Toronto')['total'], 0)
+        db.backfill_facets(self.conn)
+        self.assertEqual(self.page(location='Toronto', term='Summer 2027')['total'], expected)
+
     def test_search_treats_percent_and_underscore_as_literal_text(self):
         job_id = self.page()['items'][0]['job']['id']
         self.conn.execute('UPDATE canonical_jobs SET company=%s WHERE id=%s', ('100%_company', job_id))
@@ -160,7 +187,7 @@ class PaginationTests(unittest.TestCase):
 
     def test_filter_options_cover_the_catalog_not_only_the_page(self):
         options = self.client.get('/api/feed/filters').json()
-        self.assertEqual(options, {'locations': ['Toronto', 'Vancouver'], 'terms': ['Fall 2027', 'Summer 2027']})
+        self.assertEqual(options, {'locations': ['Toronto', 'Vancouver'], 'terms': ['Summer 2027', 'Fall 2027']})
 
     def test_candidate_membership_state_and_counts_never_leak(self):
         ids = [item['job']['id'] for item in self.page(limit=4)['items']]

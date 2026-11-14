@@ -2,8 +2,10 @@
 import type { JobSource, ListingFilterOptions } from '../types/jobs';
 import type { ListingFilters } from '../lib/listings';
 export function FilterBar({ options, sources, filters, onChange }: { options: ListingFilterOptions; sources: JobSource[]; filters: ListingFilters; onChange: (filters: ListingFilters) => void }) {
-  const locations = [...new Set([...options.locations, ...(filters.location ? [filters.location] : [])])].sort();
-  const terms = [...new Set([...options.terms, ...(filters.term ? [filters.term] : [])])].sort();
+  // The server orders options (remote first, terms chronologically); keep a stale selection visible.
+  const withSelection = (values: string[], selected: string) => selected && !values.includes(selected) ? [...values, selected] : values;
+  const locations = withSelection(options.locations, filters.location);
+  const terms = withSelection(options.terms, filters.term);
   const change = (key: keyof ListingFilters, value: string) => onChange({ ...filters, [key]: value });
   return <div className="filter-bar" role="search" aria-label="Filter listings">
     <label className="search-control"><span className="sr-only">Search listings</span><input id="search" type="search" value={filters.query} maxLength={200}

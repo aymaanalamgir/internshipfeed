@@ -5,6 +5,8 @@ from psycopg.types.json import Jsonb
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .facets import canonical_locations, canonical_terms, term_sort_key
+
 # Serialize mapping changes, including merges and source URL corrections. Acquired
 # before source row locks so ingestion and backfills share the same lock order.
 RECONCILIATION_LOCK = 78112029
@@ -153,6 +155,16 @@ def link_posting(conn, posting_id, decision):
         (decision.canonical_job_id, posting_id, decision.match_method, decision.match_confidence, decision.matched_url))
 
 
+def job_facets(rows):
+    """Union of every live linked posting's normalized locations and terms."""
+    live = [row for row in rows if row['status'] not in {'closed', 'dead'}] or rows
+    locations, terms = [], set()
+    for row in live:
+        locations += [value for value in canonical_locations(row['location']) if value not in locations]
+        terms.update(canonical_terms(row['term'], row['title']))
+    return locations, sorted(terms, key=term_sort_key)
+
+
 def refresh_canonical(conn, canonical_id):
     rows = conn.execute("""SELECT p.*, p.application_url AS url FROM source_postings p
         JOIN canonical_job_sources m ON m.source_posting_id = p.id
@@ -172,8 +184,10 @@ def refresh_canonical(conn, canonical_id):
     data.update(application_url=representative['application_url'], posted_at=min(dates) if dates else None,
                 description=descriptions[0]['description'] if descriptions else None, keywords=keywords,
                 first_seen_at=min(row['first_seen_at'] for row in rows), last_seen_at=max(row['last_seen_at'] for row in rows))
+    data['locations'], data['terms'] = job_facets(rows)
     old = conn.execute('SELECT * FROM canonical_jobs WHERE id = %s', (canonical_id,)).fetchone()
-    content = ('company', 'title', 'location', 'application_url', 'posted_at', 'status', 'description', 'keywords')
+    content = ('company', 'title', 'location', 'application_url', 'posted_at', 'status', 'description', 'keywords',
+               'locations', 'terms')
     changed = any(data[key] != old[key] for key in content)
     fields = list(data)
     values = [Jsonb(data[key]) if key == 'keywords' else data[key] for key in fields]
