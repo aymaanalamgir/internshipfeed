@@ -16,7 +16,7 @@ from psycopg.types.json import Jsonb
 from . import applications
 from .models import CandidateProfile, CandidateProfileUpdate, CanonicalJob, JobDetails, JobInteractionState, JobKeywords, JobListing, JobListItem, JobListPage, SourceJobReference
 from .pagination import decode_cursor, encode_cursor
-from .facets import RULES_VERSION as FACET_RULES_VERSION, term_sort_key
+from .facets import RULES_VERSION as FACET_RULES_VERSION, location_tree, term_sort_key
 from .reconciliation import RECONCILIATION_LOCK, backfill, job_facets, canonicalize_url, link_posting, reconcile, refresh_canonical, root_id
 from .sources import SOURCES, get_source
 
@@ -64,12 +64,15 @@ def backfill_facets(conn):
         groups.setdefault(row['id'], []).append(row)
     values = []
     for canonical_id, rows in groups.items():
-        locations, terms = job_facets(rows)
-        values.append({'id': canonical_id, 'locations': locations, 'terms': terms})
+        locations, terms, regions, areas = job_facets(rows)
+        values.append({'id': canonical_id, 'locations': locations, 'terms': terms, 'regions': regions, 'areas': areas})
     if values:
         conn.execute("""UPDATE canonical_jobs c SET locations=ARRAY(SELECT jsonb_array_elements_text(v.locations)),
-            terms=ARRAY(SELECT jsonb_array_elements_text(v.terms))
-            FROM jsonb_to_recordset(%s) AS v(id bigint, locations jsonb, terms jsonb) WHERE c.id=v.id""", (Jsonb(values),))
+            terms=ARRAY(SELECT jsonb_array_elements_text(v.terms)),
+            location_regions=ARRAY(SELECT jsonb_array_elements_text(v.regions)),
+            location_areas=ARRAY(SELECT jsonb_array_elements_text(v.areas))
+            FROM jsonb_to_recordset(%s) AS v(id bigint, locations jsonb, terms jsonb, regions jsonb, areas jsonb)
+            WHERE c.id=v.id""", (Jsonb(values),))
 
 
 def ensure_source(conn, repository):
@@ -242,9 +245,13 @@ def _catalog_predicates(status=None, query=None, source=None, source_id=None, in
     return clauses, params
 
 
-def _directory_query(profile_id, status=None, query=None, source=None, source_id=None, location=None, term=None):
+def _directory_query(profile_id, status=None, query=None, source=None, source_id=None, location=None, term=None, region=None, area=None):
     clauses, params = _catalog_predicates(status, query, source, source_id)
     clauses += ['NOT COALESCE(state.dismissed,false)', 'NOT COALESCE(state.applied,false)']
+    if region:
+        clauses.append('%s = ANY(c.location_regions)'); params.append(region)
+    if area:
+        clauses.append('%s = ANY(c.location_areas)'); params.append(area)
     if location:
         clauses.append('%s = ANY(c.locations)'); params.append(location)
     if term:
@@ -295,9 +302,8 @@ def listing_filter_options(conn, profile_id):
                                          UNION ALL SELECT 'terms', unnest(c.terms)) facet(kind, value)
         WHERE """ + ' AND '.join(clauses) + ' GROUP BY facet.kind', params).fetchall()
     row = {'locations': [], 'terms': [], **{item['kind']: item['values'] for item in rows}}
-    # Remote options lead, then places alphabetically; terms run chronologically.
-    locations = sorted(row['locations'], key=lambda value: (not value.startswith('Remote'), value.casefold()))
-    return {'locations': locations, 'terms': sorted(row['terms'], key=term_sort_key)}
+    # Region > province/state/country (Remote (X) included) > city; terms run chronologically.
+    return {'regions': location_tree(row['locations']), 'terms': sorted(row['terms'], key=term_sort_key)}
 
 
 def _source_job(row):

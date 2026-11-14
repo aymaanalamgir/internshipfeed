@@ -233,9 +233,21 @@ class CanonicalJobPage(BaseModel):
     next_cursor: Optional[str]
 
 
+class LocationArea(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    cities: List[str]
+
+
+class LocationRegion(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: Literal['Canada', 'United States', 'International', 'Remote']
+    areas: List[LocationArea]
+
+
 class ListingFilterOptions(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    locations: List[str]
+    regions: List[LocationRegion]
     terms: List[str]
 
 

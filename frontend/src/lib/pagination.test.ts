@@ -22,9 +22,9 @@ test('directory requests send bounded pages, normalized filters, cursor, and can
   const controller = new AbortController();
   const fetch = mock.method(globalThis, 'fetch', async () => response(page([1])));
   try {
-    await getListings({ query: ' PYTHON ', source: '2', location: 'Toronto', term: 'Summer 2027', status: 'open' }, 'next', controller.signal);
+    await getListings({ query: ' PYTHON ', source: '2', region: 'Canada', area: 'Ontario', location: 'Toronto', term: 'Summer 2027', status: 'open' }, 'next', controller.signal);
     const url = new URL(String(fetch.mock.calls[0].arguments[0]), 'https://example.test');
-    assert.deepEqual(Object.fromEntries(url.searchParams), { limit: '50', q: 'python', location: 'Toronto', term: 'Summer 2027', source_id: '2', status: 'open', cursor: 'next' });
+    assert.deepEqual(Object.fromEntries(url.searchParams), { limit: '50', q: 'python', region: 'Canada', area: 'Ontario', location: 'Toronto', term: 'Summer 2027', source_id: '2', status: 'open', cursor: 'next' });
     assert.equal((fetch.mock.calls[0].arguments[1] as RequestInit).signal, controller.signal);
   } finally { fetch.mock.restore(); }
 });

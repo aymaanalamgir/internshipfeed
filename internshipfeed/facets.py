@@ -8,7 +8,7 @@ import re
 import unicodedata
 
 # Bump when the rules below change; startup then recomputes every stored job once.
-RULES_VERSION = 1
+RULES_VERSION = 3
 
 US_STATES = {
     'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas', 'CA': 'California',
@@ -43,7 +43,7 @@ CITY_ALIASES = {
     'la': 'Los Angeles, CA', 'dc': 'Washington, DC', 'washington dc': 'Washington, DC',
     'washington d.c.': 'Washington, DC',
 }
-REMOTE_REGIONS = {'': 'Remote', 'usa': 'Remote (US)', 'us': 'Remote (US)', 'united states': 'Remote (US)',
+REMOTE_REGIONS = {'': 'Remote (Anywhere)', 'anywhere': 'Remote (Anywhere)', 'usa': 'Remote (US)', 'us': 'Remote (US)', 'united states': 'Remote (US)',
                   'canada': 'Remote (Canada)', 'uk': 'Remote (UK)', 'united kingdom': 'Remote (UK)'}
 UNSPECIFIED = {'', 'unknown', 'not specified', 'multiple locations', 'various', 'tbd', 'n/a', 'na', 'anywhere'}
 
@@ -83,6 +83,9 @@ def canonical_location(value):
     # A trailing country is redundant once a US state or Canadian province code is present.
     if len(parts) >= 3 and parts[-1].casefold() in NORTH_AMERICA and parts[-2].upper() in REGION_CODES:
         parts = parts[:-1]
+    # "Ontario, Canada" is the province itself, shown like a bare state ("Florida").
+    if len(parts) == 2 and parts[-1].casefold() in NORTH_AMERICA and parts[0].casefold() in REGION_BY_NAME:
+        return REGION_CODES[REGION_BY_NAME[parts[0].casefold()]]
     if len(parts) >= 2:
         region = parts[-1].upper() if parts[-1].upper() in REGION_CODES else REGION_BY_NAME.get(parts[-1].casefold())
         if region:
@@ -97,6 +100,71 @@ def canonical_location(value):
     if single.upper() in REGION_CODES and len(single) == 2:
         return REGION_CODES[single.upper()]
     return COUNTRY_ALIASES.get(single.casefold(), REGION_CODES.get(REGION_BY_NAME.get(single.casefold()), single))
+
+
+CANADA, UNITED_STATES, INTERNATIONAL, REMOTE = 'Canada', 'United States', 'International', 'Remote'
+REGION_ORDER = (CANADA, UNITED_STATES, INTERNATIONAL, REMOTE)
+REMOTE_ANYWHERE = 'Remote (Anywhere)'
+
+
+def describe_location(label):
+    """Canonical label -> (regions, area, is_city) for the Region > Province/State/Country > City cascade.
+
+    Remote labels are areas: "Remote (Canada)" sits beside Ontario under Canada and also under
+    the top-level Remote region. Country-wide labels ("Canada") belong to a region but no area.
+    """
+    if label.startswith('Remote'):
+        scope = label[len('Remote'):].strip(' ()')
+        home = {'Canada': CANADA, 'US': UNITED_STATES, 'Anywhere': None}.get(scope, INTERNATIONAL)
+        return ([home] if home else []) + [REMOTE], label, False
+    if label in (CANADA, UNITED_STATES):
+        return [label], None, False
+    if label in CA_PROVINCES.values():
+        return [CANADA], label, False
+    if label in US_STATES.values():
+        return [UNITED_STATES], label, False
+    if ', ' not in label:
+        return [INTERNATIONAL], label, False  # a country, e.g. Singapore
+    code = label.rsplit(', ', 1)[1]
+    if code in CA_PROVINCES:
+        return [CANADA], CA_PROVINCES[code], True
+    if code in US_STATES:
+        return [UNITED_STATES], US_STATES[code], True
+    return [INTERNATIONAL], code, True  # "London, United Kingdom" -> United Kingdom
+
+
+def location_facets(labels):
+    """A job's canonical labels -> (regions, areas) it should match."""
+    regions, areas = set(), set()
+    for label in labels:
+        label_regions, area, _ = describe_location(label)
+        regions.update(label_regions)
+        if area:
+            areas.add(area)
+    return sorted(regions, key=REGION_ORDER.index), sorted(areas)
+
+
+def _area_key(area):
+    # Remote first (Anywhere, then Canada, US, others), then places alphabetically.
+    remote_rank = {REMOTE_ANYWHERE: 0, 'Remote (Canada)': 1, 'Remote (US)': 2}
+    return (0, remote_rank.get(area, 3), area) if area.startswith('Remote') else (1, 0, area.casefold())
+
+
+def location_tree(labels):
+    """Labels in use -> [{name, areas: [{name, cities}]}] in Canada, US, International, Remote order."""
+    tree = {region: {} for region in REGION_ORDER}
+    present = set()
+    for label in labels:
+        label_regions, area, is_city = describe_location(label)
+        present.update(label_regions)
+        for region in label_regions:
+            if area:
+                cities = tree[region].setdefault(area, set())
+                if is_city:
+                    cities.add(label)
+    return [{'name': region, 'areas': [{'name': area, 'cities': sorted(tree[region][area], key=str.casefold)}
+                                       for area in sorted(tree[region], key=_area_key)]}
+            for region in REGION_ORDER if region in present]
 
 
 def canonical_locations(raw):

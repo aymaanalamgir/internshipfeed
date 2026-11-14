@@ -85,6 +85,8 @@ def sources(conn=Depends(connection)):
 def catalog_page(status: Optional[Literal['open', 'closed', 'unknown']] = None,
                  q: Optional[str] = Query(default=None, max_length=200), source: Optional[str] = Query(default=None, max_length=2048),
                  source_id: Optional[int] = Query(default=None, gt=0, le=9223372036854775807),
+                 region: Optional[Literal['Canada', 'United States', 'International', 'Remote']] = None,
+                 area: Optional[str] = Query(default=None, max_length=200),
                  location: Optional[str] = Query(default=None, max_length=1000),
                  term: Optional[str] = Query(default=None, max_length=200),
                  limit: int = Query(default=50, ge=1, le=100),
@@ -97,7 +99,7 @@ def catalog_page(status: Optional[Literal['open', 'closed', 'unknown']] = None,
     try:
         return db.list_job_summaries(conn, candidate['id'], limit=limit, cursor=cursor,
                                      status=status, query=q, source=source, source_id=source_id,
-                                     location=location, term=term)
+                                     region=region, area=area, location=location, term=term)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
 

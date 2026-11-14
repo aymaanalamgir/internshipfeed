@@ -33,7 +33,7 @@ export function ListingsPage({ workflow, sources, filters, onFiltersChange, onUp
   const visible = jobs.filter(item => !states[item.job.id]?.dismissed && !states[item.job.id]?.applied);
   return <main className="workspace listings-page" id="main-content">
     <div className="page-heading"><h1 tabIndex={-1}>All listings</h1><button id="reload" className="text-button" title="Refetch stored jobs; does not scrape sources" disabled={query.isFetching} onClick={() => void query.refetch()}>Refresh data</button></div>
-    <FilterBar options={options.data ?? { locations: [], terms: [] }} sources={sources} filters={filters} onChange={onFiltersChange} />
+    <FilterBar options={options.data ?? { regions: [], terms: [] }} sources={sources} filters={filters} onChange={onFiltersChange} />
     <div className="directory-meta"><span id="summary">{loading ? 'Loading listings…' : `${visible.length} of ${total} jobs`}</span><SyncControl onUpdated={onUpdated} /></div>
     {options.isError && <p className="field-error" role="alert">Could not load filter options. <button className="text-button" onClick={() => void options.refetch()}>Retry filters</button></p>}
     {!loading && <RefreshState fetching={query.isFetching && !query.isFetchingNextPage} error={query.isError && !query.isFetchNextPageError} onRetry={() => void query.refetch()} />}

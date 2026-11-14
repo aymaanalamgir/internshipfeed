@@ -96,9 +96,11 @@ cell into a list of canonical values stored as `canonical_jobs.locations` / `ter
 becomes `Toronto, ON` and `New York, NY`; neighborhoods collapse to their city
 (`Kanata, Ottawa, ON` → `Ottawa, ON`); remote cells become `Remote (US)` etc. Terms split
 into single seasons (`Autumn` → `Fall`), falling back to the title only when the term cell
-has none. A job matches every value it holds. Options list remote first, then places
-alphabetically; terms run chronologically. Bump `RULES_VERSION` after changing the rules
-so startup recomputes stored jobs.
+has none. A job matches every value it holds. Locations cascade **Region** (Canada,
+United States, International, Remote) → **province / state / country** (`Remote (Canada)`
+etc. sit at this level, remote first) → **city**, backed by `location_regions` and
+`location_areas` arrays. Terms run chronologically. Bump `RULES_VERSION` after changing
+the rules so startup recomputes stored jobs.
 
 ### Reconciliation and descriptions
 

@@ -117,7 +117,10 @@ export interface JobListPage {
   has_more: boolean;
   next_cursor: string | null;
 }
-export interface ListingFilterOptions { locations: string[]; terms: string[]; }
+export type RegionName = 'Canada' | 'United States' | 'International' | 'Remote';
+export interface LocationArea { name: string; cities: string[]; }
+export interface LocationRegion { name: RegionName; areas: LocationArea[]; }
+export interface ListingFilterOptions { regions: LocationRegion[]; terms: string[]; }
 export interface JobSource { id: number; name: string; url: string; }
 export interface SyncRun { id: string; status: string; inserted?: number; updated?: number; processed?: number; scraped?: number; finished_at?: string | null; }
 export interface IngestionStatus { latest_run: SyncRun | null; last_successful_at: string | null; manual_sync_allowed: boolean; scheduled_sync_configured: boolean; }

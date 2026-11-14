@@ -815,7 +815,7 @@ class DatabaseTests(unittest.TestCase):
 
     def test_canonical_storage_persists_requested_metadata(self):
         columns = self.conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'canonical_jobs' ORDER BY ordinal_position").fetchall()
-        self.assertEqual([row['column_name'] for row in columns], ['id', 'company', 'title', 'location', 'application_url', 'posted_at', 'status', 'description', 'keywords', 'first_seen_at', 'last_seen_at', 'created_at', 'updated_at', 'locations', 'terms'])
+        self.assertEqual([row['column_name'] for row in columns], ['id', 'company', 'title', 'location', 'application_url', 'posted_at', 'status', 'description', 'keywords', 'first_seen_at', 'last_seen_at', 'created_at', 'updated_at', 'locations', 'terms', 'location_regions', 'location_areas'])
         self.save(self.job)
         row = self.conn.execute('SELECT * FROM canonical_jobs').fetchone()
         self.assertEqual(row['application_url'], self.job.url)

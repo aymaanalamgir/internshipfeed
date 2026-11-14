@@ -1,7 +1,8 @@
 """Normalization of raw location and term cells into canonical filter values."""
 import unittest
 
-from internshipfeed.facets import canonical_location, canonical_locations, canonical_terms
+from internshipfeed.facets import (canonical_location, canonical_locations, canonical_terms, describe_location,
+                                   location_facets, location_tree)
 
 
 class LocationTests(unittest.TestCase):
@@ -26,7 +27,7 @@ class LocationTests(unittest.TestCase):
                 self.assertEqual(canonical_location(raw), expected)
 
     def test_remote_regions(self):
-        cases = {'Remote': 'Remote', 'Remote in USA': 'Remote (US)', 'Remote in US': 'Remote (US)',
+        cases = {'Remote': 'Remote (Anywhere)', 'Remote in USA': 'Remote (US)', 'Remote in US': 'Remote (US)',
                  'Remote, Canada': 'Remote (Canada)', 'Remote in Canada': 'Remote (Canada)',
                  'Remote (UK)': 'Remote (UK)', 'Remote India': 'Remote (India)'}
         for raw, expected in cases.items():
@@ -40,6 +41,46 @@ class LocationTests(unittest.TestCase):
                          ['New York, NY', 'Toronto, ON'])
         for raw in ('', None, 'Unknown', 'TBD'):
             self.assertEqual(canonical_locations(raw), [])
+
+
+class RegionTests(unittest.TestCase):
+    def test_province_with_country_is_the_province(self):
+        self.assertEqual(canonical_location('Ontario, Canada'), 'Ontario')
+        self.assertEqual(canonical_location('Nova Scotia, Canada'), 'Nova Scotia')
+
+    def test_labels_map_to_regions_area_and_city(self):
+        cases = {
+            'Toronto, ON': (['Canada'], 'Ontario', True), 'Ontario': (['Canada'], 'Ontario', False),
+            'Remote (Canada)': (['Canada', 'Remote'], 'Remote (Canada)', False), 'Canada': (['Canada'], None, False),
+            'New York, NY': (['United States'], 'New York', True), 'Florida': (['United States'], 'Florida', False),
+            'Remote (US)': (['United States', 'Remote'], 'Remote (US)', False),
+            'London, United Kingdom': (['International'], 'United Kingdom', True),
+            'Singapore': (['International'], 'Singapore', False),
+            'Remote (UK)': (['International', 'Remote'], 'Remote (UK)', False),
+            'Remote (Anywhere)': (['Remote'], 'Remote (Anywhere)', False),
+        }
+        for label, expected in cases.items():
+            with self.subTest(label=label):
+                self.assertEqual(describe_location(label), expected)
+
+    def test_job_facets_union_regions_and_areas(self):
+        self.assertEqual(location_facets(['Toronto, ON', 'Remote (US)', 'Paris, France']),
+                         (['Canada', 'United States', 'International', 'Remote'], ['France', 'Ontario', 'Remote (US)']))
+
+    def test_tree_orders_regions_then_remote_first_areas_then_cities(self):
+        tree = location_tree(['Toronto, ON', 'Ottawa, ON', 'Calgary, AB', 'Remote (Canada)', 'Canada', 'Austin, TX',
+                              'Remote (Anywhere)', 'Remote (US)', 'London, United Kingdom', 'Singapore'])
+        self.assertEqual(tree, [
+            {'name': 'Canada', 'areas': [{'name': 'Remote (Canada)', 'cities': []},
+                                         {'name': 'Alberta', 'cities': ['Calgary, AB']},
+                                         {'name': 'Ontario', 'cities': ['Ottawa, ON', 'Toronto, ON']}]},
+            {'name': 'United States', 'areas': [{'name': 'Remote (US)', 'cities': []},
+                                                {'name': 'Texas', 'cities': ['Austin, TX']}]},
+            {'name': 'International', 'areas': [{'name': 'Singapore', 'cities': []},
+                                                {'name': 'United Kingdom', 'cities': ['London, United Kingdom']}]},
+            {'name': 'Remote', 'areas': [{'name': 'Remote (Anywhere)', 'cities': []},
+                                         {'name': 'Remote (Canada)', 'cities': []}, {'name': 'Remote (US)', 'cities': []}]},
+        ])
 
 
 class TermTests(unittest.TestCase):

@@ -31,8 +31,8 @@ test('navigation exposes five destinations and Profile as a dialog control', () 
   assert.doesNotMatch(html, /href="\/profile"/);
 });
 test('directory filters normalize search without changing exact metadata selections', () => {
-  assert.deepEqual(normalizeFilters({ query: ' PYTHON ', location: 'Toronto', term: 'Summer 2027', source: '2', status: 'open' }),
-    { query: 'python', location: 'Toronto', term: 'Summer 2027', source: '2', status: 'open' });
+  assert.deepEqual(normalizeFilters({ query: ' PYTHON ', region: 'Canada', area: 'Ontario', location: 'Toronto', term: 'Summer 2027', source: '2', status: 'open' }),
+    { query: 'python', region: 'Canada', area: 'Ontario', location: 'Toronto', term: 'Summer 2027', source: '2', status: 'open' });
   assert.deepEqual(normalizeFilters(emptyFilters()), emptyFilters());
 });
 test('SkillTag uses one escaped label and an accessible optional remove control', () => {

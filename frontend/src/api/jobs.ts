@@ -8,7 +8,7 @@ export const LISTING_PAGE_SIZE = 50;
 export function getListings(filters: ListingFilters = emptyFilters(), cursor: string | null = null, signal?: AbortSignal) {
   const values = normalizeFilters(filters);
   const params = new URLSearchParams({ limit: String(LISTING_PAGE_SIZE) });
-  for (const [key, value] of Object.entries({ q: values.query, location: values.location, term: values.term, source_id: values.source, status: values.status, cursor })) {
+  for (const [key, value] of Object.entries({ q: values.query, region: values.region, area: values.area, location: values.location, term: values.term, source_id: values.source, status: values.status, cursor })) {
     if (value) params.set(key, value);
   }
   return requestJson<JobListPage>(`/api/feed?${params}`, { signal });

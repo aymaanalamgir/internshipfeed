@@ -132,10 +132,21 @@ class PaginationTests(unittest.TestCase):
                 self.assertEqual(page['total'], 1)
                 self.assertEqual(page['items'][0]['term'], 'Winter 2027, Spring 2027, Fall 2027')
         self.assertEqual(self.page(q='Multi', location='Toronto, ON, Canada / NYC / Remote in USA')['total'], 0)
+        for params in ({'region': 'Canada'}, {'region': 'United States'}, {'region': 'Remote'},
+                       {'area': 'Ontario'}, {'area': 'New York'}, {'area': 'Remote (US)'},
+                       {'region': 'Canada', 'area': 'Ontario', 'location': 'Toronto, ON'}):
+            with self.subTest(**params):
+                self.assertEqual(self.page(q='Multi', **params)['total'], 1)
+        self.assertEqual(self.page(q='Multi', region='International')['total'], 0)
+        self.assertEqual(self.page(q='Multi', area='Quebec')['total'], 0)
+        self.assertEqual(self.client.get('/api/feed', params={'region': 'Mars'}).status_code, 422)
         options = self.client.get('/api/feed/filters').json()
-        self.assertEqual(options['locations'][0], 'Remote (US)')
-        self.assertTrue({'Toronto, ON', 'New York, NY', 'Toronto', 'Vancouver'} <= set(options['locations']))
-        self.assertFalse([value for value in options['locations'] if '/' in value])
+        self.assertEqual(options['regions'], [
+            {'name': 'Canada', 'areas': [{'name': 'Ontario', 'cities': ['Toronto, ON']}]},
+            {'name': 'United States', 'areas': [{'name': 'Remote (US)', 'cities': []}, {'name': 'New York', 'cities': ['New York, NY']}]},
+            {'name': 'International', 'areas': [{'name': 'Toronto', 'cities': []}, {'name': 'Vancouver', 'cities': []}]},
+            {'name': 'Remote', 'areas': [{'name': 'Remote (US)', 'cities': []}]},
+        ])
         self.assertEqual(options['terms'], ['Winter 2027', 'Spring 2027', 'Summer 2027', 'Fall 2027'])
 
     def test_facet_backfill_recomputes_existing_rows(self):
@@ -187,7 +198,8 @@ class PaginationTests(unittest.TestCase):
 
     def test_filter_options_cover_the_catalog_not_only_the_page(self):
         options = self.client.get('/api/feed/filters').json()
-        self.assertEqual(options, {'locations': ['Toronto', 'Vancouver'], 'terms': ['Summer 2027', 'Fall 2027']})
+        self.assertEqual([area['name'] for region in options['regions'] for area in region['areas']], ['Toronto', 'Vancouver'])
+        self.assertEqual(options['terms'], ['Summer 2027', 'Fall 2027'])
 
     def test_candidate_membership_state_and_counts_never_leak(self):
         ids = [item['job']['id'] for item in self.page(limit=4)['items']]
