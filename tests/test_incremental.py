@@ -137,11 +137,16 @@ class IncrementalTests(unittest.TestCase):
 
     def test_raw_age_only_changes_touch_lineage_without_application_fetch(self):
         self.ingest(SIMPLIFY_TEXT,SIMPLIFY)
-        before=self.conn.execute("SELECT snapshot_id,last_seen_at FROM source_postings ORDER BY id LIMIT 1").fetchone()
+        # Pretend the first scrape ran yesterday, so today's 3d is the same posting date.
+        self.conn.execute('UPDATE source_postings SET posted_at=posted_at-1')
+        self.conn.execute('UPDATE canonical_jobs SET posted_at=posted_at-1')
+        before=self.conn.execute("SELECT snapshot_id,last_seen_at,posted_at FROM source_postings ORDER BY id LIMIT 1").fetchone()
         with patch('internshipfeed.ingestion.enrich_job') as enrich:
             result=self.ingest(SIMPLIFY_TEXT.replace('<td>2d</td>','<td>3d</td>'),SIMPLIFY,enrich=True)
-        after=self.conn.execute('SELECT snapshot_id,last_seen_at,raw_posted_at FROM source_postings ORDER BY id LIMIT 1').fetchone()
+        after=self.conn.execute('SELECT snapshot_id,last_seen_at,raw_posted_at,posted_at FROM source_postings ORDER BY id LIMIT 1').fetchone()
         self.assertEqual(result['updated'],0)
+        self.assertIsNotNone(after['posted_at'])
+        self.assertEqual(after['posted_at'],before['posted_at'])
         self.assertEqual(after['raw_posted_at'],'3d')
         self.assertNotEqual(before['snapshot_id'],after['snapshot_id'])
         self.assertGreater(after['last_seen_at'],before['last_seen_at'])

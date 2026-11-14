@@ -187,12 +187,18 @@ def run_ingestion(input_path=None, output=None, enrich=True, enrichment_limit=No
                     report['scraped'] = len(records)
                     run['scraped'] += len(records)
                     old_jobs = db.source_observations(conn, configured['id'])
+                    # Ages are relative to when this content was first captured.
+                    observed_on = snapshot['fetched_at'].astimezone(timezone.utc).date()
                     seen, unchanged, normalized = set(), [], []
                     # Validate every row before deciding whether disappearance means closure.
                     for record in records:
                         try:
-                            job = normalize(record, source.url, str(snapshot['id']))
+                            job = normalize(record, source.url, str(snapshot['id']), observed_on)
                             job.source_id = configured['id']
+                            known = old_jobs.get(job.external_id)
+                            # Coarse ages (1mo) drift forward daily; the earliest estimate is the stable one.
+                            if record.date_kind == 'relative' and job.posted_at and known and known.posted_at:
+                                job.posted_at = min(job.posted_at, known.posted_at)
                             normalized.append(job)
                         except Exception as exc:
                             run['failed'] += 1

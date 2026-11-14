@@ -77,12 +77,15 @@ share persistence, eligibility, and ranking logic.
 Python `urllib` fetches source files; Markdown rules and `HTMLParser` parse them.
 All emit `SourceJobRecord` → `normalize()` → `JobListing`, preserving source
 identity, raw cells, job fields, term/status, snapshot, and enrichment results.
-Relative ages such as `2d` stay raw; missing exact dates remain null.
+Relative ages such as `2d` become the scrape date minus that age; missing exact dates remain null.
 
 **Posting dates:** Canadian Tech's full dates and any full Simplify dates normalize
 to nullable `DATE` values (API: `YYYY-MM-DD`), retaining `raw_posted_at` on source
-postings. Relative ages, yearless values, and malformed dates stay undated; no fetch
-time or inferred year supplies a fake date. Canonical `posted_at` is the earliest
+postings. Simplify's relative ages (`0d`, `2d`, `3w`, `1mo`) are subtracted from the
+UTC date the snapshot was first fetched, so `2d` scraped on Nov 14 is posted Nov 12
+(weeks are 7 days, months 30). Later scrapes keep the earliest estimate, so coarse
+ages such as `1mo` do not drift. Yearless values and malformed dates stay undated;
+no inferred year supplies a fake date. Canonical `posted_at` is the earliest
 non-null linked upstream date and updates when earlier evidence arrives.
 `first_seen_at` remains discovery metadata; daily email uses exact batch discovery
 IDs independently of upstream dates. Existing posting-date indexes cover this field.

@@ -32,13 +32,13 @@ SIMPLIFY = JobSource(
     key="simplify", name="Simplify Internships",
     url="https://github.com/SimplifyJobs/Summer2027-Internships",
     readme_url="https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/README.md",
-    parse=parse_simplify, parser_version=2,
+    parse=parse_simplify, parser_version=3,
 )
 SIMPLIFY_OFF_SEASON = JobSource(
     key="simplify-off-season", name="Simplify Off-Season Internships",
     url=SIMPLIFY.url,
     readme_url="https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/README-Off-Season.md",
-    parse=parse_simplify, parser_version=2,
+    parse=parse_simplify, parser_version=3,
 )
 SOURCES = (CANADIAN, SIMPLIFY, SIMPLIFY_OFF_SEASON)
 

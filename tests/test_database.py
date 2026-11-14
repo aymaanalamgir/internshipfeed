@@ -355,8 +355,8 @@ class DatabaseTests(unittest.TestCase):
         old_id = db.list_jobs(self.conn)[0].id
         self.conn.execute("UPDATE source_postings SET first_seen_at='2020-01-01T00:00:00Z'")
         original_normalize = normalize
-        def corrected(record, source, snapshot):
-            job = original_normalize(record, source, snapshot)
+        def corrected(record, source, snapshot, observed_on=None):
+            job = original_normalize(record, source, snapshot, observed_on)
             if source == self.job.source and job.external_id == self.job.external_id:
                 job.url = 'https://example.com/corrected-application'
             return job

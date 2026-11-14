@@ -35,15 +35,20 @@ class SourceTests(unittest.TestCase):
                 self.assertEqual(normalize(before, SIMPLIFY_OFF_SEASON.url, 'a').external_id,
                                  normalize(after, SIMPLIFY_OFF_SEASON.url, 'b').external_id)
 
-    def test_simplify_month_ages_are_relative_and_stay_undated(self):
+    def test_simplify_ages_are_subtracted_from_the_scrape_date(self):
         markup = (FIXTURES / 'simplify.md').read_text()
-        for age in ('0d', '2h', '3w', '1m', '1mo', '12mo'):
+        scraped = date(2026, 11, 14)
+        for age, expected in (('0d', scraped), ('2h', scraped), ('2d', date(2026, 11, 12)),
+                              ('3w', date(2026, 10, 24)), ('1m', date(2026, 10, 15)),
+                              ('1mo', date(2026, 10, 15)), ('12mo', date(2025, 11, 19))):
             with self.subTest(age=age):
                 record = SIMPLIFY.parse(markup.replace('<td>2d</td>', '<td>' + age + '</td>'))[0]
                 self.assertEqual(record.date_kind, 'relative')
-                job = normalize(record, SIMPLIFY.url, 'a')
-                self.assertIsNone(job.posted_at)
+                job = normalize(record, SIMPLIFY.url, 'a', scraped)
+                self.assertEqual(job.posted_at, expected)
                 self.assertEqual(job.raw_posted_at, age)
+                # Without a scrape date there is nothing to subtract from.
+                self.assertIsNone(normalize(record, SIMPLIFY.url, 'a').posted_at)
 
     def test_off_season_uses_shared_parser_with_explicit_terms_and_archived_missing_heading(self):
         self.assertIs(SIMPLIFY_OFF_SEASON.parse, SIMPLIFY.parse)
@@ -114,6 +119,8 @@ class SourceTests(unittest.TestCase):
         old = records[0].model_copy(update={'external_id': None})
         new = old.model_copy(update={'posted_at_raw': '3d'})
         self.assertEqual(normalize(old, SIMPLIFY.url, 'a').external_id, normalize(new, SIMPLIFY.url, 'b').external_id)
+        self.assertEqual(normalize(old, SIMPLIFY.url, 'a', date(2026, 11, 14)).external_id,
+                         normalize(new, SIMPLIFY.url, 'b', date(2026, 11, 20)).external_id)
         self.assertEqual(records[2].url, 'https://simplify.jobs/p/only-link')
 
     def test_continuation_never_leaks_between_category_tables(self):
